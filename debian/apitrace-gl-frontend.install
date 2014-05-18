@@ -1,0 +1,8 @@
+usr/bin/apitrace
+usr/bin/eglretrace
+usr/bin/glretrace
+usr/bin/qapitrace
+
+debian/qapitrace.desktop usr/share/applications
+
+usr/lib/apitrace

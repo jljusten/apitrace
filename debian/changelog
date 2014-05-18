@@ -1,0 +1,5 @@
+apitrace (5.0+repack-1) UNRELEASED; urgency=low
+
+  * Initial release (Closes: #636679, LP: #813848)
+
+ -- Christopher James Halse Rogers <raof@ubuntu.com>  Mon, 13 Feb 2012 16:32:44 +1100
