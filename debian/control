@@ -16,6 +16,8 @@ Build-Depends:
  python,
  zlib1g-dev,
  libsnappy-dev,
+ libpng12-dev,
+ libbsd-dev,
 Standards-Version: 3.9.5
 Homepage: https://apitrace.github.io
 Vcs-Git: git://git.debian.org/pkg-xorg/app/apitrace.git
