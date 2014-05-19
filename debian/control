@@ -33,7 +33,7 @@ Depends:
  python-imaging,
 Description: tools for debugging OpenGL applications and drivers - tracing frontends
  apitrace is a suite of tools for debugging OpenGL applications and drivers.
- It includes a tool to generate a trace of all the OpenGL calls an applicaton
+ It includes a tool to generate a trace of all the OpenGL calls an application
  makes and a tool for replaying these traces and inspecting the rendering and
  OpenGL state during the program's execution.
  .
@@ -41,7 +41,7 @@ Description: tools for debugging OpenGL applications and drivers - tracing front
  OpenGL applications.
  .
  This package contains frontends for the apitrace tool, making it easy to trace
- applicatons and replay, compare, profile, and modify existing traces.
+ applications and replay, compare, profile, and modify existing traces.
 
 Package: apitrace-gl-tracers
 Architecture: any
@@ -53,7 +53,7 @@ Multi-Arch: same
 Built-Using: ${built-using:Depends}
 Description: tools for debugging OpenGL applications and drivers - application tracer
  apitrace is a suite of tools for debugging OpenGL applications and drivers.
- It includes a tool to generate a trace of all the OpenGL calls an applicaton
+ It includes a tool to generate a trace of all the OpenGL calls an application
  makes and a tool for replaying these traces and inspecting the rendering and
  OpenGL state during the program's execution.
  .
