@@ -44,13 +44,13 @@
 namespace glretrace {
 
 
-static std::map<glws::Profile, glws::Visual *>
+static std::map<glprofile::Profile, glws::Visual *>
 visuals;
 
 
 inline glws::Visual *
-getVisual(glws::Profile profile) {
-    std::map<glws::Profile, glws::Visual *>::iterator it = visuals.find(profile);
+getVisual(glprofile::Profile profile) {
+    std::map<glprofile::Profile, glws::Visual *>::iterator it = visuals.find(profile);
     if (it == visuals.end()) {
         glws::Visual *visual = NULL;
         unsigned samples = retrace::samples;
@@ -76,7 +76,7 @@ getVisual(glws::Profile profile) {
 
 
 static glws::Drawable *
-createDrawableHelper(glws::Profile profile, int width = 32, int height = 32, bool pbuffer = false) {
+createDrawableHelper(glprofile::Profile profile, int width = 32, int height = 32, bool pbuffer = false) {
     glws::Visual *visual = getVisual(profile);
     glws::Drawable *draw = glws::createDrawable(visual, width, height, pbuffer);
     if (!draw) {
@@ -89,7 +89,7 @@ createDrawableHelper(glws::Profile profile, int width = 32, int height = 32, boo
 
 
 glws::Drawable *
-createDrawable(glws::Profile profile) {
+createDrawable(glprofile::Profile profile) {
     return createDrawableHelper(profile);
 }
 
@@ -107,14 +107,13 @@ createPbuffer(int width, int height) {
 
 
 Context *
-createContext(Context *shareContext, glws::Profile profile) {
+createContext(Context *shareContext, glprofile::Profile profile) {
     glws::Visual *visual = getVisual(profile);
     glws::Context *shareWsContext = shareContext ? shareContext->wsContext : NULL;
     glws::Context *ctx = glws::createContext(visual, shareWsContext, retrace::debug);
     if (!ctx) {
-        std::cerr << "error: failed to create OpenGL context\n";
+        std::cerr << "error: failed to create " << profile << " context.\n";
         exit(1);
-        return NULL;
     }
 
     return new Context(ctx);
@@ -164,7 +163,6 @@ makeCurrent(trace::Call &call, glws::Drawable *drawable, Context *context)
     if (!success) {
         std::cerr << "error: failed to make current OpenGL context and drawable\n";
         exit(1);
-        return false;
     }
 
     currentContextPtr = context;
@@ -232,18 +230,31 @@ updateDrawable(int width, int height) {
     currentDrawable->resize(width, height);
     currentDrawable->show();
 
+    // Ensure the drawable dimensions, as perceived by glstate match.
+    if (retrace::debug) {
+        GLint newWidth = 0;
+        GLint newHeight = 0;
+        if (glstate::getDrawableBounds(&newWidth, &newHeight) &&
+            (newWidth != width || newHeight != height)) {
+            std::cerr
+                << "error: drawable failed to resize: "
+                << "expected " << width << "x" << height << ", "
+                << "got " << newWidth << "x" << newHeight << "\n";
+        }
+    }
+
     glScissor(0, 0, width, height);
 }
 
 
 int
-parseAttrib(const trace::Value *attribs, int param, int default_ = 0) {
+parseAttrib(const trace::Value *attribs, int param, int default_, int terminator) {
     const trace::Array *attribs_ = attribs ? attribs->toArray() : NULL;
 
     if (attribs_) {
         for (size_t i = 0; i + 1 < attribs_->values.size(); i += 2) {
             int param_i = attribs_->values[i]->toSInt();
-            if (param_i == 0) {
+            if (param_i == terminator) {
                 break;
             }
 
@@ -255,6 +266,52 @@ parseAttrib(const trace::Value *attribs, int param, int default_ = 0) {
     }
 
     return default_;
+}
+
+
+/**
+ * Parse GLX/WGL_ARB_create_context attribute list.
+ */
+glprofile::Profile
+parseContextAttribList(const trace::Value *attribs)
+{
+    // {GLX,WGL}_CONTEXT_MAJOR_VERSION_ARB
+    int major_version = parseAttrib(attribs, 0x2091, 1);
+
+    // {GLX,WGL}_CONTEXT_MINOR_VERSION_ARB
+    int minor_version = parseAttrib(attribs, 0x2092, 0);
+
+    int profile_mask = parseAttrib(attribs, GL_CONTEXT_PROFILE_MASK, GL_CONTEXT_CORE_PROFILE_BIT);
+
+    bool core_profile = profile_mask & GL_CONTEXT_CORE_PROFILE_BIT;
+    if (major_version < 3 ||
+        (major_version == 3 && minor_version < 2)) {
+        core_profile = false;
+    }
+
+    int context_flags = parseAttrib(attribs, GL_CONTEXT_FLAGS, 0);
+
+    bool forward_compatible = context_flags & GL_CONTEXT_FLAG_FORWARD_COMPATIBLE_BIT;
+    if (major_version < 3) {
+        forward_compatible = false;
+    }
+
+    // {GLX,WGL}_CONTEXT_ES_PROFILE_BIT_EXT
+    bool es_profile = profile_mask & 0x0004;
+
+    glprofile::Profile profile;
+    if (es_profile) {
+        profile.api = glprofile::API_GLES;
+    } else {
+        profile.api = glprofile::API_GL;
+        profile.core = core_profile;
+        profile.forwardCompatible = forward_compatible;
+    }
+
+    profile.major = major_version;
+    profile.minor = minor_version;
+
+    return profile;
 }
 
 

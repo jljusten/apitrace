@@ -47,11 +47,12 @@ using namespace glretrace;
 
 typedef std::map<unsigned long long, glws::Drawable *> DrawableMap;
 typedef std::map<unsigned long long, Context *> ContextMap;
-typedef std::map<unsigned long long, glws::Profile> ProfileMap;
+typedef std::map<unsigned long long, glprofile::Profile> ProfileMap;
 static DrawableMap drawable_map;
 static ContextMap context_map;
 static ProfileMap profile_map;
 
+/* FIXME: This should be tracked per thread. */
 static unsigned int current_api = EGL_OPENGL_ES_API;
 
 /*
@@ -60,7 +61,7 @@ static unsigned int current_api = EGL_OPENGL_ES_API;
  * instead of guessing.  For now, start with a guess of ES2 profile, which
  * should be the most common case for EGL.
  */
-static glws::Profile last_profile = glws::PROFILE_ES2;
+static glprofile::Profile last_profile(glprofile::API_GLES, 2, 0);
 
 static glws::Drawable *null_drawable = NULL;
 
@@ -102,7 +103,7 @@ getContext(unsigned long long context_ptr) {
 static void createDrawable(unsigned long long orig_config, unsigned long long orig_surface)
 {
     ProfileMap::iterator it = profile_map.find(orig_config);
-    glws::Profile profile;
+    glprofile::Profile profile;
 
     // If the requested config is associated with a profile, use that
     // profile. Otherwise, assume that the last used profile is what
@@ -147,8 +148,11 @@ static void retrace_eglDestroySurface(trace::Call &call) {
 }
 
 static void retrace_eglBindAPI(trace::Call &call) {
+    if (!call.ret->toBool()) {
+        return;
+    }
+
     current_api = call.arg(0).toUInt();
-    eglBindAPI(current_api);
 }
 
 static void retrace_eglCreateContext(trace::Call &call) {
@@ -156,51 +160,35 @@ static void retrace_eglCreateContext(trace::Call &call) {
     unsigned long long orig_config = call.arg(1).toUIntPtr();
     Context *share_context = getContext(call.arg(2).toUIntPtr());
     trace::Array *attrib_array = call.arg(3).toArray();
-    glws::Profile profile;
+    glprofile::Profile profile;
 
     switch (current_api) {
     case EGL_OPENGL_API:
-        profile = glws::PROFILE_COMPAT;
+        profile.api = glprofile::API_GL;
+        profile.major = parseAttrib(attrib_array, EGL_CONTEXT_MAJOR_VERSION, 1);
+        profile.minor = parseAttrib(attrib_array, EGL_CONTEXT_MINOR_VERSION, 0);
+        if (profile.versionGreaterOrEqual(3,2)) {
+             int profileMask = parseAttrib(attrib_array, EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR);
+             if (profileMask & EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR) {
+                 profile.core = true;
+             }
+             int contextFlags = parseAttrib(attrib_array, EGL_CONTEXT_FLAGS_KHR, 0);
+             if (contextFlags & EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR) {
+                 profile.forwardCompatible = true;
+             }
+        }
         break;
     case EGL_OPENGL_ES_API:
     default:
-        profile = glws::PROFILE_ES1;
-        if (attrib_array) {
-            for (int i = 0; i < attrib_array->values.size(); i += 2) {
-                int v = attrib_array->values[i]->toSInt();
-                if (v == EGL_CONTEXT_CLIENT_VERSION) {
-                    v = attrib_array->values[i + 1]->toSInt();
-                    if (v == 2)
-                        profile = glws::PROFILE_ES2;
-                    break;
-                }
-            }
-        }
+        profile.api = glprofile::API_GLES;
+        profile.major = parseAttrib(attrib_array, EGL_CONTEXT_MAJOR_VERSION, 1);
+        profile.minor = parseAttrib(attrib_array, EGL_CONTEXT_MINOR_VERSION, 0);
         break;
     }
 
 
     Context *context = glretrace::createContext(share_context, profile);
-    if (!context) {
-        const char *name;
-        switch (profile) {
-        case glws::PROFILE_COMPAT:
-            name = "OpenGL";
-            break;
-        case glws::PROFILE_ES1:
-            name = "OpenGL ES 1.1";
-            break;
-        case glws::PROFILE_ES2:
-            name = "OpenGL ES 2.0";
-            break;
-        default:
-            name = "unknown";
-            break;
-        }
-
-        retrace::warning(call) << "Failed to create " << name << " context.\n";
-        exit(1);
-    }
+    assert(context);
 
     context_map[orig_context] = context;
     profile_map[orig_config] = profile;
@@ -291,6 +279,7 @@ const retrace::Entry glretrace::egl_callbacks[] = {
     {"eglQueryContext", &retrace::ignore},
     {"eglWaitGL", &retrace::ignore},
     {"eglWaitNative", &retrace::ignore},
+    {"eglReleaseThread", &retrace::ignore},
     {"eglSwapBuffers", &retrace_eglSwapBuffers},
     //{"eglCopyBuffers", &retrace::ignore},
     {"eglGetProcAddress", &retrace::ignore},

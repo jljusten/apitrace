@@ -33,6 +33,7 @@
 #include "os.hpp"
 #include "os_thread.hpp"
 #include "os_string.hpp"
+#include "os_version.hpp"
 #include "trace_file.hpp"
 #include "trace_writer_local.hpp"
 #include "trace_format.hpp"
@@ -64,7 +65,8 @@ static void exceptionCallback(void)
 LocalWriter::LocalWriter() :
     acquired(0)
 {
-    os::log("apitrace: loaded\n");
+    os::String process = os::getProcessName();
+    os::log("apitrace: loaded into %s\n", process.str());
 
     // Install the signal handlers as early as possible, to prevent
     // interfering with the application's signal handling.
@@ -94,10 +96,22 @@ LocalWriter::open(void) {
         process.trimDirectory();
 
 #ifdef ANDROID
-	os::String prefix = "/data/data";
-	prefix.join(process);
+        os::String prefix = "/data/data";
+        prefix.join(process);
 #else
-	os::String prefix = os::getCurrentDir();
+        os::String prefix = os::getCurrentDir();
+#ifdef _WIN32
+        // Avoid writing into Windows' system directory as quite often access
+        // will be denied.
+        if (IsWindows8OrGreater()) {
+            char szDirectory[MAX_PATH + 1];
+            GetSystemDirectoryA(szDirectory, sizeof szDirectory);
+            if (stricmp(prefix, szDirectory) == 0) {
+                GetTempPathA(sizeof szDirectory, szDirectory);
+                prefix = szDirectory;
+            }
+        }
+#endif
 #endif
         prefix.join(process);
 
@@ -137,7 +151,7 @@ LocalWriter::open(void) {
 
 static uintptr_t next_thread_num = 1;
 
-static OS_THREAD_SPECIFIC_PTR(void)
+static OS_THREAD_SPECIFIC(uintptr_t)
 thread_num;
 
 void LocalWriter::checkProcessId(void) {
@@ -163,12 +177,10 @@ unsigned LocalWriter::beginEnter(const FunctionSig *sig, bool fake) {
         open();
     }
 
-    // Although thread_num is a void *, we actually use it as a uintptr_t
-    uintptr_t this_thread_num =
-        reinterpret_cast<uintptr_t>(static_cast<void *>(thread_num));
+    uintptr_t this_thread_num = thread_num;
     if (!this_thread_num) {
         this_thread_num = next_thread_num++;
-        thread_num = reinterpret_cast<void *>(this_thread_num);
+        thread_num = this_thread_num;
     }
 
     assert(this_thread_num);
@@ -230,6 +242,27 @@ void LocalWriter::flush(void) {
 
 
 LocalWriter localWriter;
+
+
+void fakeMemcpy(const void *ptr, size_t size) {
+    assert(ptr);
+    if (!size) {
+        return;
+    }
+    unsigned _call = localWriter.beginEnter(&memcpy_sig, true);
+    localWriter.beginArg(0);
+    localWriter.writePointer((uintptr_t)ptr);
+    localWriter.endArg();
+    localWriter.beginArg(1);
+    localWriter.writeBlob(ptr, size);
+    localWriter.endArg();
+    localWriter.beginArg(2);
+    localWriter.writeUInt(size);
+    localWriter.endArg();
+    localWriter.endEnter();
+    localWriter.beginLeave(_call);
+    localWriter.endLeave();
+}
 
 
 } /* namespace trace */

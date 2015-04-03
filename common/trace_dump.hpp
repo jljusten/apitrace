@@ -45,18 +45,22 @@ enum {
     DUMP_FLAG_NO_COLOR                 = (1 << 0),
     DUMP_FLAG_NO_ARG_NAMES             = (1 << 1),
     DUMP_FLAG_NO_CALL_NO               = (1 << 2),
+    DUMP_FLAG_THREAD_IDS               = (1 << 3),
 };
 
 
 void dump(Value *value, std::ostream &os, DumpFlags flags = 0);
 
 
-inline std::ostream & operator <<(std::ostream &os, Value *value) {
-    if (value) {
-        dump(value, os);
-    }
+inline std::ostream &
+operator << (std::ostream &os, Value & value) {
+    dump(& value, os);
     return os;
 }
+
+
+std::ostream &
+operator << (std::ostream &os, Value *value);
 
 
 void dump(Call &call, std::ostream &os, DumpFlags flags = 0);

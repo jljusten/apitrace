@@ -24,10 +24,16 @@
  **************************************************************************/
 
 
+#include <string.h>
+#include <deque>
+
 #include "trace_model.hpp"
 
 
 namespace trace {
+
+
+static Null null;
 
 
 Call::~Call() {
@@ -40,8 +46,23 @@ Call::~Call() {
     }
 }
 
+Value &
+Call::argByName(const char *argName) {
+    for (unsigned i = 0; i < sig->num_args; ++i) {
+        if (strcmp(sig->arg_names[i], argName) == 0) {
+            return arg(i);
+        }
+    }
+    return null;
+}
+
 
 String::~String() {
+    delete [] value;
+}
+
+
+WString::~WString() {
     delete [] value;
 }
 
@@ -59,17 +80,75 @@ Array::~Array() {
     }
 }
 
+
+#define BLOB_MAX_BOUND_SIZE (1*1024*1024*1024)
+
+class BoundBlob {
+public:
+    static size_t totalSize;
+
+private:
+    size_t size;
+    char *buf;
+
+public:
+    inline
+    BoundBlob(size_t _size, char *_buf) :
+        size(_size),
+        buf(_buf)
+    {
+        assert(totalSize + size >= totalSize);
+        totalSize += size;
+    }
+
+    inline
+    ~BoundBlob()  {
+        assert(totalSize >= size);
+        totalSize -= size;
+        delete [] buf;
+    }
+
+    // Fake move constructor
+    // std::deque:push_back with move semantics was added only from c++11.
+    BoundBlob(const BoundBlob & other)
+    {
+        size = other.size;
+        buf = other.buf;
+        const_cast<BoundBlob &>(other).size = 0;
+        const_cast<BoundBlob &>(other).buf = 0;
+    }
+
+    // Disallow assignment operator
+    BoundBlob& operator = (const BoundBlob &);
+};
+
+size_t BoundBlob::totalSize = 0;
+
+typedef std::deque<BoundBlob> BoundBlobQueue;
+static BoundBlobQueue boundBlobQueue;
+
+
 Blob::~Blob() {
     // Blobs are often bound and referred during many calls, so we can't delete
     // them here in that case.
     //
     // Once bound there is no way to know when they were unbound, which
-    // effectively means we have to leak them.  A better solution would be to
-    // keep a list of bound pointers, and defer the destruction to when the
-    // trace in question has been fully processed.
+    // effectively means we have to leak them.  But some applications
+    // (particularly OpenGL applications that use vertex arrays in user memory)
+    // we can easily exhaust all memory.  So instead we maintain a queue of
+    // bound blobs and keep the total size bounded.
+
     if (!bound) {
         delete [] buf;
+        return;
     }
+
+    while (!boundBlobQueue.empty() &&
+           BoundBlob::totalSize + size > BLOB_MAX_BOUND_SIZE) {
+        boundBlobQueue.pop_front();
+    }
+
+    boundBlobQueue.push_back(BoundBlob(size, buf));
 }
 
 StackFrame::~StackFrame() {
@@ -93,6 +172,7 @@ bool UInt   ::toBool(void) const { return value != 0; }
 bool Float  ::toBool(void) const { return value != 0; }
 bool Double ::toBool(void) const { return value != 0; }
 bool String ::toBool(void) const { return true; }
+bool WString::toBool(void) const { return true; }
 bool Struct ::toBool(void) const { return true; }
 bool Array  ::toBool(void) const { return true; }
 bool Blob   ::toBool(void) const { return true; }
@@ -180,6 +260,7 @@ void UInt   ::visit(Visitor &visitor) { visitor.visit(this); }
 void Float  ::visit(Visitor &visitor) { visitor.visit(this); }
 void Double ::visit(Visitor &visitor) { visitor.visit(this); }
 void String ::visit(Visitor &visitor) { visitor.visit(this); }
+void WString::visit(Visitor &visitor) { visitor.visit(this); }
 void Enum   ::visit(Visitor &visitor) { visitor.visit(this); }
 void Bitmask::visit(Visitor &visitor) { visitor.visit(this); }
 void Struct ::visit(Visitor &visitor) { visitor.visit(this); }
@@ -196,6 +277,7 @@ void Visitor::visit(UInt *) { assert(0); }
 void Visitor::visit(Float *) { assert(0); }
 void Visitor::visit(Double *) { assert(0); }
 void Visitor::visit(String *) { assert(0); }
+void Visitor::visit(WString *) { assert(0); }
 void Visitor::visit(Enum *node) { assert(0); }
 void Visitor::visit(Bitmask *node) { visit(static_cast<UInt *>(node)); }
 void Visitor::visit(Struct *) { assert(0); }
@@ -203,13 +285,10 @@ void Visitor::visit(Array *) { assert(0); }
 void Visitor::visit(Blob *) { assert(0); }
 void Visitor::visit(Pointer *) { assert(0); }
 void Visitor::visit(Repr *node) { node->machineValue->visit(*this); }
-void Visitor::visit(Backtrace *) { assert(0); }
-void Visitor::visit(StackFrame *) { assert(0); }
 
 
-static Null null;
-
-const Value & Value::operator[](size_t index) const {
+Value &
+Value::operator[] (size_t index) const {
     const Array *array = toArray();
     if (array) {
         if (index < array->values.size()) {

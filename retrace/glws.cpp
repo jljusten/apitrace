@@ -35,20 +35,14 @@
 namespace glws {
 
 
-void
-getProfileVersion(Profile profile, unsigned &major, unsigned &minor, bool &core)
-{
-    major = (profile >> 4) & 0xf;
-    minor =  profile       & 0xf;
-    core = isCoreProfile(profile);
-}
-
-
 bool
 checkExtension(const char *extName, const char *extString)
 {
     assert(extName);
-    assert(extString);
+
+    if (!extString) {
+        return false;
+    }
 
     const char *p = extString;
     const char *q = extName;
@@ -81,46 +75,11 @@ Drawable::copySubBuffer(int x, int y, int width, int height) {
 
 bool
 Context::hasExtension(const char *string) {
-    if (extensions.empty()) {
-        unsigned major, minor;
-        bool core;
-        getProfileVersion(profile, major, minor, core);
-        if (major >= 3) {
-            // Use glGetStringi
-            GLint num_extensions = 0;
-            glGetIntegerv(GL_NUM_EXTENSIONS, &num_extensions);
-            assert(num_extensions);
-            for (int i = 0; i < num_extensions; ++i) {
-                const char *extension = reinterpret_cast<const char *>(glGetStringi(GL_EXTENSIONS, i));
-                assert(extension);
-                if (extension) {
-                    extensions.insert(extension);
-                }
-            }
-        } else {
-            // Use glGetString
-            const char *begin = reinterpret_cast<const char *>(glGetString(GL_EXTENSIONS));
-            assert(begin);
-            do {
-                const char *end = begin;
-                char c = *end;
-                while (c != '\0' && c != ' ') {
-                    ++end;
-                    c = *end;
-                }
-                if (end != begin) {
-                    extensions.insert(std::string(begin, end));
-                }
-                
-                if (c == '\0') {
-                    break;
-                }
-                begin = end + 1;
-            } while(1);
-        }
+    if (extensions.strings.empty()) {
+        extensions.getCurrentContextExtensions(profile);
     }
 
-    return extensions.find(string) != extensions.end();
+    return extensions.has(string);
 }
 
 

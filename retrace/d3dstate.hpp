@@ -31,11 +31,19 @@
 
 #include <windows.h>
 
+#ifdef HAVE_DXGI
+#include <dxgiformat.h>
+#endif
 
+
+struct IDirect3DDevice7;
 struct IDirect3DDevice8;
 struct IDirect3DDevice9;
+struct IDXGISwapChain;
 struct ID3D10Device;
+struct ID3D10Resource;
 struct ID3D11DeviceContext;
+struct ID3D11Resource;
 
 
 class JSONWriter;
@@ -49,6 +57,20 @@ namespace d3dstate {
 
 
 extern const GUID GUID_D3DSTATE;
+
+
+/*
+ * D3D7
+ */
+
+image::Image *
+getRenderTargetImage(IDirect3DDevice7 *pDevice);
+
+void
+dumpFramebuffer(JSONWriter &json, IDirect3DDevice7 *pDevice);
+
+void
+dumpDevice(std::ostream &os, IDirect3DDevice7 *pDevice);
 
 
 /*
@@ -82,6 +104,20 @@ void
 dumpDevice(std::ostream &os, IDirect3DDevice9 *pDevice);
 
 
+#ifdef HAVE_DXGI
+
+
+/*
+ * DXGI
+ */
+
+image::Image *
+getRenderTargetImage(IDXGISwapChain *pSwapChain);
+
+void
+dumpDevice(std::ostream &os, IDXGISwapChain *pSwapChain);
+
+
 /*
  * D3D10
  */
@@ -104,7 +140,8 @@ dumpDevice(std::ostream &os, ID3D10Device *pDevice);
  */
 
 image::Image *
-getRenderTargetImage(ID3D11DeviceContext *pDeviceContext);
+getRenderTargetImage(ID3D11DeviceContext *pDeviceContext,
+                     DXGI_FORMAT *dxgiFormat = 0);
 
 void
 dumpTextures(JSONWriter &json, ID3D11DeviceContext *pDeviceContext);
@@ -114,6 +151,9 @@ dumpFramebuffer(JSONWriter &json, ID3D11DeviceContext *pDeviceContext);
 
 void
 dumpDevice(std::ostream &os, ID3D11DeviceContext *pDeviceContext);
+
+
+#endif /* HAVE_DXGI */
 
 
 } /* namespace d3dstate */

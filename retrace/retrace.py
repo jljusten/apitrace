@@ -69,10 +69,10 @@ class ValueAllocator(stdapi.Visitor):
         pass
 
     def visitArray(self, array, lvalue, rvalue):
-        print '    %s = static_cast<%s *>(_allocator.alloc(&%s, sizeof *%s));' % (lvalue, array.type, rvalue, lvalue)
+        print '    %s = _allocator.allocArray<%s>(&%s);' % (lvalue, array.type, rvalue)
 
     def visitPointer(self, pointer, lvalue, rvalue):
-        print '    %s = static_cast<%s *>(_allocator.alloc(&%s, sizeof *%s));' % (lvalue, pointer.type, rvalue, lvalue)
+        print '    %s = _allocator.allocArray<%s>(&%s);' % (lvalue, pointer.type, rvalue)
 
     def visitIntPointer(self, pointer, lvalue, rvalue):
         pass
@@ -154,7 +154,7 @@ class ValueDeserializer(stdapi.Visitor, stdapi.ExpanderMixin):
         print '    %s = static_cast<%s>((%s).toPointer());' % (lvalue, pointer, rvalue)
 
     def visitObjPointer(self, pointer, lvalue, rvalue):
-        print '    %s = static_cast<%s>(retrace::toObjPointer(call, %s));' % (lvalue, pointer, rvalue)
+        print '    %s = retrace::asObjPointer<%s>(call, %s);' % (lvalue, pointer.type, rvalue)
 
     def visitLinearPointer(self, pointer, lvalue, rvalue):
         print '    %s = static_cast<%s>(retrace::toPointer(%s));' % (lvalue, pointer, rvalue)
@@ -396,7 +396,7 @@ class Retracer:
 
     def deserializeThisPointer(self, interface):
         print r'    %s *_this;' % (interface.name,)
-        print r'    _this = static_cast<%s *>(retrace::toObjPointer(call, call.arg(0)));' % (interface.name,)
+        print r'    _this = retrace::asObjPointer<%s>(call, call.arg(0));' % (interface.name,)
         print r'    if (!_this) {'
         print r'        return;'
         print r'    }'
@@ -472,33 +472,77 @@ class Retracer:
         arg_names = ", ".join(function.argNames())
         if function.type is not stdapi.Void:
             print '    _result = %s(%s);' % (function.name, arg_names)
-            print '    (void)_result;'
             self.checkResult(function.type)
         else:
             print '    %s(%s);' % (function.name, arg_names)
 
     def invokeInterfaceMethod(self, interface, method):
-        # On release our reference when we reach Release() == 0 call in the
-        # trace.
-        if method.name == 'Release':
-            print '    if (call.ret->toUInt() == 0) {'
-            print '        retrace::delObj(call.arg(0));'
-            print '    }'
-
         arg_names = ", ".join(method.argNames())
         if method.type is not stdapi.Void:
             print '    _result = _this->%s(%s);' % (method.name, arg_names)
-            print '    (void)_result;'
-            self.checkResult(method.type)
         else:
             print '    _this->%s(%s);' % (method.name, arg_names)
+
+        # Adjust reference count when QueryInterface fails.  This is
+        # particularly useful when replaying traces on older Direct3D runtimes
+        # which might miss newer versions of interfaces, yet none of those
+        # methods are actually used.
+        #
+        # TODO: Generalize to other methods that return interfaces
+        if method.name == 'QueryInterface':
+            print r'    if (FAILED(_result)) {'
+            print r'        IUnknown *pObj = retrace::asObjPointer<IUnknown>(call, *call.arg(2).toArray()->values[0]);'
+            print r'        if (pObj) {'
+            print r'            pObj->AddRef();'
+            print r'        }'
+            print r'    }'
+
+        if method.type is not stdapi.Void:
+            self.checkResult(method.type)
+
+        # Debug COM reference counting.  Disabled by default as reported
+        # reference counts depend on internal implementation details.
+        if method.name in ('AddRef', 'Release'):
+            print r'    if (0) retrace::checkMismatch(call, "cRef", call.ret, _result);'
+
+        # On release our reference when we reach Release() == 0 call in the
+        # trace.
+        if method.name == 'Release':
+            print r'    ULONG _orig_result = call.ret->toUInt();'
+            print r'    if (_orig_result == 0 || _result == 0) {'
+            print r'        if (_orig_result != 0) {'
+            print r'            retrace::warning(call) << "unexpected object destruction\n";'
+            print r'        }'
+            print r'        retrace::delObj(call.arg(0));'
+            print r'    }'
 
     def checkResult(self, resultType):
         if str(resultType) == 'HRESULT':
             print r'    if (FAILED(_result)) {'
-            print '         static char szMessageBuffer[128];'
-            print r'        retrace::warning(call) << "call returned 0x" << std::hex << _result << std::dec << ": " << (FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, _result, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), szMessageBuffer, sizeof szMessageBuffer, NULL) ? szMessageBuffer : "???") << "\n";'
+            print r'        retrace::failed(call, _result);'
+            print r'        return;'
             print r'    }'
+        else:
+            print r'    (void)_result;'
+
+    def checkPitchMismatch(self, method):
+        # Warn for mismatches in 2D/3D mappings.
+        # FIXME: We should try to swizzle them.  It's a bit of work, but possible.
+        for outArg in method.args:
+            if outArg.output \
+               and isinstance(outArg.type, stdapi.Pointer) \
+               and isinstance(outArg.type.type, stdapi.Struct):
+                print r'        const trace::Array *_%s = call.arg(%u).toArray();' % (outArg.name, outArg.index)
+                print r'        if (%s) {' % outArg.name
+                print r'            const trace::Struct *_struct = _%s->values[0]->toStruct();' % (outArg.name)
+                print r'            if (_struct) {'
+                struct = outArg.type.type
+                for memberIndex in range(len(struct.members)):
+                    memberType, memberName = struct.members[memberIndex]
+                    if memberName.endswith('Pitch'):
+                        print r'                retrace::checkMismatch(call, "%s", _struct->members[%u], %s->%s);' % (memberName, memberIndex, outArg.name, memberName)
+                print r'            }'
+                print r'        }'
 
     def filterFunction(self, function):
         return True
@@ -532,7 +576,7 @@ class Retracer:
                 self.retraceFunction(function)
         interfaces = api.getAllInterfaces()
         for interface in interfaces:
-            for method in interface.iterMethods():
+            for method in interface.methods:
                 if method.sideeffects and not method.internal:
                     self.retraceInterfaceMethod(interface, method)
 
@@ -544,9 +588,9 @@ class Retracer:
                 else:
                     print '    {"%s", &retrace::ignore},' % (function.name,)
         for interface in interfaces:
-            for method in interface.iterMethods():                
+            for base, method in interface.iterBaseMethods():
                 if method.sideeffects:
-                    print '    {"%s::%s", &retrace_%s__%s},' % (interface.name, method.name, interface.name, method.name)
+                    print '    {"%s::%s", &retrace_%s__%s},' % (interface.name, method.name, base.name, method.name)
                 else:
                     print '    {"%s::%s", &retrace::ignore},' % (interface.name, method.name)
         print '    {NULL, NULL}'

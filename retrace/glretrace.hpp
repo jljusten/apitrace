@@ -58,7 +58,7 @@ struct Context {
     }
 };
 
-extern glws::Profile defaultProfile;
+extern glprofile::Profile defaultProfile;
 
 extern bool insideList;
 extern bool insideGlBeginEnd;
@@ -69,11 +69,14 @@ getCurrentContext(void);
 
 
 int
-parseAttrib(const trace::Value *attribs, int param, int default_);
+parseAttrib(const trace::Value *attribs, int param, int default_ = 0, int terminator = 0);
+
+glprofile::Profile
+parseContextAttribList(const trace::Value *attribs);
 
 
 glws::Drawable *
-createDrawable(glws::Profile profile);
+createDrawable(glprofile::Profile profile);
 
 glws::Drawable *
 createDrawable(void);
@@ -82,7 +85,7 @@ glws::Drawable *
 createPbuffer(int width, int height);
 
 Context *
-createContext(Context *shareContext, glws::Profile profile);
+createContext(Context *shareContext, glprofile::Profile profile);
 
 Context *
 createContext(Context *shareContext = 0);
@@ -109,6 +112,12 @@ void updateDrawable(int width, int height);
 void flushQueries();
 void beginProfile(trace::Call &call, bool isDraw);
 void endProfile(trace::Call &call, bool isDraw);
+
+GLenum
+blockOnFence(trace::Call &call, GLsync sync, GLbitfield flags);
+
+GLenum
+clientWaitSync(trace::Call &call, GLsync sync, GLbitfield flags, GLuint64 timeout);
 
 } /* namespace glretrace */
 

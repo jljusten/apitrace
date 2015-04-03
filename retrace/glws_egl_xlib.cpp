@@ -33,16 +33,50 @@
 
 #include "glproc.hpp"
 #include "glws.hpp"
+#include "glws_xlib.hpp"
 
 
 namespace glws {
 
 
-static Display *display = NULL;
 static EGLDisplay eglDisplay = EGL_NO_DISPLAY;
 static char const *eglExtensions = NULL;
 static bool has_EGL_KHR_create_context = false;
-static int screen = 0;
+
+
+static EGLenum
+translateAPI(glprofile::Profile profile)
+{
+    switch (profile.api) {
+    case glprofile::API_GL:
+        return EGL_OPENGL_API;
+    case glprofile::API_GLES:
+        return EGL_OPENGL_ES_API;
+    default:
+        assert(0);
+        return EGL_NONE;
+    }
+}
+
+
+/* Must be called before
+ *
+ * - eglCreateContext
+ * - eglGetCurrentContext
+ * - eglGetCurrentDisplay
+ * - eglGetCurrentSurface
+ * - eglMakeCurrent (when its ctx parameter is EGL_NO_CONTEXT ),
+ * - eglWaitClient
+ * - eglWaitNative
+ */
+static void
+bindAPI(EGLenum api)
+{
+    if (eglBindAPI(api) != EGL_TRUE) {
+        std::cerr << "error: eglBindAPI failed\n";
+        exit(1);
+    }
+}
 
 
 class EglVisual : public Visual
@@ -63,37 +97,12 @@ public:
 };
 
 
-static void describeEvent(const XEvent &event) {
-    if (0) {
-        switch (event.type) {
-        case ConfigureNotify:
-            std::cerr << "ConfigureNotify";
-            break;
-        case Expose:
-            std::cerr << "Expose";
-            break;
-        case KeyPress:
-            std::cerr << "KeyPress";
-            break;
-        case MapNotify:
-            std::cerr << "MapNotify";
-            break;
-        case ReparentNotify:
-            std::cerr << "ReparentNotify";
-            break;
-        default:
-            std::cerr << "Event " << event.type;
-        }
-        std::cerr << " " << event.xany.window << "\n";
-    }
-}
-
 class EglDrawable : public Drawable
 {
 public:
     Window window;
     EGLSurface surface;
-    EGLint api;
+    EGLenum api;
 
     EglDrawable(const Visual *vis, int w, int h, bool pbuffer) :
         Drawable(vis, w, h, pbuffer),
@@ -101,55 +110,13 @@ public:
     {
         XVisualInfo *visinfo = static_cast<const EglVisual *>(visual)->visinfo;
 
-        Window root = RootWindow(display, screen);
-
-        /* window attributes */
-        XSetWindowAttributes attr;
-        attr.background_pixel = 0;
-        attr.border_pixel = 0;
-        attr.colormap = XCreateColormap(display, root, visinfo->visual, AllocNone);
-        attr.event_mask = StructureNotifyMask;
-
-        unsigned long mask;
-        mask = CWBackPixel | CWBorderPixel | CWColormap | CWEventMask;
-
-        int x = 0, y = 0;
-
-        window = XCreateWindow(
-            display, root,
-            x, y, width, height,
-            0,
-            visinfo->depth,
-            InputOutput,
-            visinfo->visual,
-            mask,
-            &attr);
-
-        XSizeHints sizehints;
-        sizehints.x = x;
-        sizehints.y = y;
-        sizehints.width  = width;
-        sizehints.height = height;
-        sizehints.flags = USSize | USPosition;
-        XSetNormalHints(display, window, &sizehints);
-
-        const char *name = "glretrace";
-        XSetStandardProperties(
-            display, window, name, name,
-            None, (char **)NULL, 0, &sizehints);
+        const char *name = "eglretrace";
+        window = createWindow(visinfo, name, width, height);
 
         eglWaitNative(EGL_CORE_NATIVE_ENGINE);
 
         EGLConfig config = static_cast<const EglVisual *>(visual)->config;
         surface = eglCreateWindowSurface(eglDisplay, config, (EGLNativeWindowType)window, NULL);
-    }
-
-    void waitForEvent(int type) {
-        XEvent event;
-        do {
-            XWindowEvent(display, window, StructureNotifyMask, &event);
-            describeEvent(event);
-        } while (event.type != type);
     }
 
     ~EglDrawable() {
@@ -171,7 +138,8 @@ public:
             eglMakeCurrent(eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         }
 
-        eglDestroySurface(eglDisplay, surface);
+        // XXX: Defer destruction to prevent getting the same surface as before, which seems to cause Mesa to crash
+        EGLSurface oldSurface = surface;
 
         EGLConfig config = static_cast<const EglVisual *>(visual)->config;
         surface = eglCreateWindowSurface(eglDisplay, config, (EGLNativeWindowType)window, NULL);
@@ -179,6 +147,8 @@ public:
         if (rebindDrawSurface || rebindReadSurface) {
             eglMakeCurrent(eglDisplay, surface, surface, currentContext);
         }
+
+        eglDestroySurface(eglDisplay, oldSurface);
     }
 
     void
@@ -196,16 +166,7 @@ public:
 
         Drawable::resize(w, h);
 
-        // Tell the window manager to respect the requested size
-        XSizeHints size_hints;
-        size_hints.max_width  = size_hints.min_width  = w;
-        size_hints.max_height = size_hints.min_height = h;
-        size_hints.flags = PMinSize | PMaxSize;
-        XSetWMNormalHints(display, window, &size_hints);
-
-        XResizeWindow(display, window, w, h);
-
-        waitForEvent(ConfigureNotify);
+        resizeWindow(window, w, h);
 
         eglWaitNative(EGL_CORE_NATIVE_ENGINE);
 
@@ -238,9 +199,7 @@ public:
 
         eglWaitClient();
 
-        XMapWindow(display, window);
-
-        waitForEvent(MapNotify);
+        showWindow(window);
 
         eglWaitNative(EGL_CORE_NATIVE_ENGINE);
 
@@ -248,8 +207,9 @@ public:
     }
 
     void swapBuffers(void) {
-        eglBindAPI(api);
+        bindAPI(api);
         eglSwapBuffers(eglDisplay, surface);
+        processKeys(window);
     }
 };
 
@@ -286,13 +246,7 @@ void
 init(void) {
     load("libEGL.so.1");
 
-    display = XOpenDisplay(NULL);
-    if (!display) {
-        std::cerr << "error: unable to open display " << XDisplayName(NULL) << "\n";
-        exit(1);
-    }
-
-    screen = DefaultScreen(display);
+    initX();
 
     eglDisplay = eglGetDisplay((EGLNativeDisplayType)display);
     if (eglDisplay == EGL_NO_DISPLAY) {
@@ -314,89 +268,109 @@ init(void) {
 
 void
 cleanup(void) {
-    if (display) {
+    if (eglDisplay != EGL_NO_DISPLAY) {
         eglTerminate(eglDisplay);
-        XCloseDisplay(display);
-        display = NULL;
     }
+
+    cleanupX();
 }
+
 
 Visual *
 createVisual(bool doubleBuffer, unsigned samples, Profile profile) {
-    EglVisual *visual = new EglVisual(profile);
-    // possible combinations
-    const EGLint api_bits_gl[7] = {
-        EGL_OPENGL_BIT | EGL_OPENGL_ES_BIT | EGL_OPENGL_ES2_BIT,
-        EGL_OPENGL_BIT | EGL_OPENGL_ES_BIT,
-        EGL_OPENGL_BIT | EGL_OPENGL_ES2_BIT,
-        EGL_OPENGL_BIT,
-        EGL_OPENGL_ES_BIT | EGL_OPENGL_ES2_BIT,
-        EGL_OPENGL_ES2_BIT,
-        EGL_OPENGL_ES_BIT,
-    };
-    const EGLint api_bits_gles1[7] = {
-        EGL_OPENGL_BIT | EGL_OPENGL_ES_BIT | EGL_OPENGL_ES2_BIT,
-        EGL_OPENGL_ES_BIT | EGL_OPENGL_ES2_BIT,
-        EGL_OPENGL_BIT | EGL_OPENGL_ES_BIT,
-        EGL_OPENGL_ES_BIT,
-        EGL_OPENGL_BIT | EGL_OPENGL_ES2_BIT,
-        EGL_OPENGL_BIT,
-        EGL_OPENGL_ES2_BIT,
-    };
-    const EGLint api_bits_gles2[7] = {
-        EGL_OPENGL_BIT | EGL_OPENGL_ES_BIT | EGL_OPENGL_ES2_BIT,
-        EGL_OPENGL_ES_BIT | EGL_OPENGL_ES2_BIT,
-        EGL_OPENGL_BIT | EGL_OPENGL_ES2_BIT,
-        EGL_OPENGL_ES2_BIT,
-        EGL_OPENGL_BIT | EGL_OPENGL_ES_BIT,
-        EGL_OPENGL_BIT,
-        EGL_OPENGL_ES_BIT,
-    };
-    const EGLint *api_bits;
-
-    switch(profile) {
-    default:
-        if (!has_EGL_KHR_create_context) {
+    EGLint api_bits;
+    if (profile.api == glprofile::API_GL) {
+        api_bits = EGL_OPENGL_BIT;
+        if (profile.core && !has_EGL_KHR_create_context) {
             return NULL;
         }
-        /* pass-through */
-    case PROFILE_COMPAT:
-        api_bits = api_bits_gl;
-        break;
-    case PROFILE_ES1:
-        api_bits = api_bits_gles1;
-        break;
-    case PROFILE_ES2:
-        api_bits = api_bits_gles2;
-        break;
-    };
-
-    for (int i = 0; i < 7; i++) {
-        Attributes<EGLint> attribs;
-
-        attribs.add(EGL_SURFACE_TYPE, EGL_WINDOW_BIT);
-        attribs.add(EGL_RED_SIZE, 1);
-        attribs.add(EGL_GREEN_SIZE, 1);
-        attribs.add(EGL_BLUE_SIZE, 1);
-        attribs.add(EGL_ALPHA_SIZE, 1);
-        attribs.add(EGL_DEPTH_SIZE, 1);
-        attribs.add(EGL_STENCIL_SIZE, 1);
-        attribs.add(EGL_RENDERABLE_TYPE, api_bits[i]);
-        attribs.end(EGL_NONE);
-
-        EGLint num_configs, vid;
-        if (eglChooseConfig(eglDisplay, attribs, &visual->config, 1, &num_configs) &&
-            num_configs == 1 &&
-            eglGetConfigAttrib(eglDisplay, visual->config, EGL_NATIVE_VISUAL_ID, &vid)) {
-            XVisualInfo templ;
-            int num_visuals;
-
-            templ.visualid = vid;
-            visual->visinfo = XGetVisualInfo(display, VisualIDMask, &templ, &num_visuals);
+    } else if (profile.api == glprofile::API_GLES) {
+        switch (profile.major) {
+        case 1:
+            api_bits = EGL_OPENGL_ES_BIT;
             break;
+        case 3:
+            if (has_EGL_KHR_create_context) {
+                api_bits = EGL_OPENGL_ES3_BIT;
+                break;
+            }
+            /* fall-through */
+        case 2:
+            api_bits = EGL_OPENGL_ES2_BIT;
+            break;
+        default:
+            return NULL;
         }
+    } else {
+        assert(0);
+        return NULL;
     }
 
+    Attributes<EGLint> attribs;
+    attribs.add(EGL_SURFACE_TYPE, EGL_WINDOW_BIT);
+    attribs.add(EGL_RED_SIZE, 1);
+    attribs.add(EGL_GREEN_SIZE, 1);
+    attribs.add(EGL_BLUE_SIZE, 1);
+    attribs.add(EGL_ALPHA_SIZE, 1);
+    attribs.add(EGL_DEPTH_SIZE, 1);
+    attribs.add(EGL_STENCIL_SIZE, 1);
+    attribs.add(EGL_RENDERABLE_TYPE, api_bits);
+    attribs.end(EGL_NONE);
+
+    EGLint num_configs = 0;
+    if (!eglGetConfigs(eglDisplay, NULL, 0, &num_configs) ||
+        num_configs <= 0) {
+        return NULL;
+    }
+
+    std::vector<EGLConfig> configs(num_configs);
+    if (!eglChooseConfig(eglDisplay, attribs, &configs[0], num_configs,  &num_configs) ||
+        num_configs <= 0) {
+        return NULL;
+    }
+
+    // We can't tell what other APIs the trace will use afterwards, therefore
+    // try to pick a config which supports the widest set of APIs.
+    int bestScore = -1;
+    EGLConfig config = configs[0];
+    for (EGLint i = 0; i < num_configs; ++i) {
+        EGLint renderable_type = EGL_NONE;
+        eglGetConfigAttrib(eglDisplay, configs[i], EGL_RENDERABLE_TYPE, &renderable_type);
+        int score = 0;
+        assert(renderable_type & api_bits);
+        renderable_type &= ~api_bits;
+        if (renderable_type & EGL_OPENGL_ES2_BIT) {
+            score += 1 << 4;
+        }
+        if (renderable_type & EGL_OPENGL_ES3_BIT) {
+            score += 1 << 3;
+        }
+        if (renderable_type & EGL_OPENGL_ES_BIT) {
+            score += 1 << 2;
+        }
+        if (renderable_type & EGL_OPENGL_BIT) {
+            score += 1 << 1;
+        }
+        if (score > bestScore) {
+            config = configs[i];
+            bestScore = score;
+        }
+    }
+    assert(bestScore >= 0);
+
+    EGLint visual_id;
+    if (!eglGetConfigAttrib(eglDisplay, config, EGL_NATIVE_VISUAL_ID, &visual_id)) {
+        assert(0);
+        return NULL;
+    }
+
+    EglVisual *visual = new EglVisual(profile);
+    visual->config = config;
+
+    XVisualInfo templ;
+    int num_visuals = 0;
+    templ.visualid = visual_id;
+    visual->visinfo = XGetVisualInfo(display, VisualIDMask, &templ, &num_visuals);
     assert(visual->visinfo);
 
     return visual;
@@ -407,6 +381,7 @@ createDrawable(const Visual *visual, int width, int height, bool pbuffer)
 {
     return new EglDrawable(visual, width, height, pbuffer);
 }
+
 
 Context *
 createContext(const Visual *_visual, Context *shareContext, bool debug)
@@ -421,48 +396,60 @@ createContext(const Visual *_visual, Context *shareContext, bool debug)
         share_context = static_cast<EglContext*>(shareContext)->context;
     }
 
-    EGLint api = eglQueryAPI();
-
-    switch (profile) {
-    case PROFILE_COMPAT:
+    int contextFlags = 0;
+    if (profile.api == glprofile::API_GL) {
         load("libGL.so.1");
-        eglBindAPI(EGL_OPENGL_API);
-        break;
-    case PROFILE_ES1:
-        load("libGLESv1_CM.so.1");
-        eglBindAPI(EGL_OPENGL_ES_API);
-        break;
-    case PROFILE_ES2:
-        load("libGLESv2.so.2");
-        eglBindAPI(EGL_OPENGL_ES_API);
-        attribs.add(EGL_CONTEXT_CLIENT_VERSION, 2);
-        break;
-    default:
+
         if (has_EGL_KHR_create_context) {
-            unsigned major, minor;
-            bool core;
-            getProfileVersion(profile, major, minor, core);
-            attribs.add(EGL_CONTEXT_MAJOR_VERSION_KHR, major);
-            attribs.add(EGL_CONTEXT_MINOR_VERSION_KHR, minor);
-            if (core) {
-                attribs.add(EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR);
+            attribs.add(EGL_CONTEXT_MAJOR_VERSION_KHR, profile.major);
+            attribs.add(EGL_CONTEXT_MINOR_VERSION_KHR, profile.minor);
+            int profileMask = profile.core ? EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR : EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT_KHR;
+            attribs.add(EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, profileMask);
+            if (profile.forwardCompatible) {
+                contextFlags |= EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR;
             }
-        } else {
+        } else if (profile.versionGreaterOrEqual(3, 2)) {
+            std::cerr << "error: EGL_KHR_create_context not supported\n";
             return NULL;
         }
+    } else if (profile.api == glprofile::API_GLES) {
+        if (profile.major >= 2) {
+            load("libGLESv2.so.2");
+        } else {
+            load("libGLESv1_CM.so.1");
+        }
+
+        if (has_EGL_KHR_create_context) {
+            attribs.add(EGL_CONTEXT_MAJOR_VERSION_KHR, profile.major);
+            attribs.add(EGL_CONTEXT_MINOR_VERSION_KHR, profile.minor);
+        } else {
+            attribs.add(EGL_CONTEXT_CLIENT_VERSION, profile.major);
+        }
+    } else {
+        assert(0);
+        return NULL;
     }
 
-    if (debug && has_EGL_KHR_create_context) {
-        attribs.add(EGL_CONTEXT_FLAGS_KHR, EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR);
+    if (debug) {
+        contextFlags |= EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR;
     }
-
+    if (contextFlags && has_EGL_KHR_create_context) {
+        attribs.add(EGL_CONTEXT_FLAGS_KHR, contextFlags);
+    }
     attribs.end(EGL_NONE);
 
-    context = eglCreateContext(eglDisplay, visual->config, share_context, attribs);
-    if (!context)
-        return NULL;
+    EGLenum api = translateAPI(profile);
+    bindAPI(api);
 
-    eglBindAPI(api);
+    context = eglCreateContext(eglDisplay, visual->config, share_context, attribs);
+    if (!context) {
+        if (debug) {
+            // XXX: Mesa has problems with EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR
+            // with OpenGL ES contexts, so retry without it
+            return createContext(_visual, shareContext, false);
+        }
+        return NULL;
+    }
 
     return new EglContext(visual, context);
 }
@@ -477,15 +464,13 @@ makeCurrent(Drawable *drawable, Context *context)
         EglContext *eglContext = static_cast<EglContext *>(context);
         EGLBoolean ok;
 
+        EGLenum api = translateAPI(eglContext->profile);
+        bindAPI(api);
+
         ok = eglMakeCurrent(eglDisplay, eglDrawable->surface,
                             eglDrawable->surface, eglContext->context);
 
         if (ok) {
-            EGLint api;
-
-            eglQueryContext(eglDisplay, eglContext->context,
-                            EGL_CONTEXT_CLIENT_TYPE, &api);
-
             eglDrawable->api = api;
         }
 
@@ -493,15 +478,6 @@ makeCurrent(Drawable *drawable, Context *context)
     }
 }
 
-bool
-processEvents(void) {
-    while (XPending(display) > 0) {
-        XEvent event;
-        XNextEvent(display, &event);
-        describeEvent(event);
-    }
-    return true;
-}
 
 
 } /* namespace glws */

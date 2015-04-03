@@ -36,7 +36,8 @@ class D3DRetracer(Retracer):
 
     def retraceApi(self, api):
         print '// Swizzling mapping for lock addresses'
-        print 'static std::map<void *, void *> _maps;'
+        print 'typedef std::pair<void *, UINT> MappingKey;'
+        print 'static std::map<MappingKey, void *> _maps;'
         print
 
         Retracer.retraceApi(self, api)
@@ -52,6 +53,13 @@ class D3DRetracer(Retracer):
             print '    SDKVersion |= 0x80000000;'
             print '} else {'
             print '    SDKVersion &= ~0x80000000;'
+            print '}'
+
+        # d3d8d.dll can be found in the Aug 2007 DXSDK.  It works on XP, but
+        # not on Windows 7.
+        if function.name in ('Direct3DCreate8'):
+            print 'if (retrace::debug >= 2 && !g_szD3D8DllName && LoadLibraryA("d3d8d.dll")) {'
+            print '    g_szD3D8DllName = "d3d8d.dll";'
             print '}'
 
         Retracer.invokeFunction(self, function)
@@ -90,6 +98,23 @@ class D3DRetracer(Retracer):
             print r'        pPresentationParameters->Windowed = TRUE;'
             print r'        pPresentationParameters->FullScreen_RefreshRateInHz = 0;'
             print r'    }'
+
+            # On D3D8, ensure we use BackBufferFormat compatible with the
+            # current DisplayFormat.
+            #
+            # TODO: BackBufferFormat doesn't need to be always exectly to
+            # DisplayFormat.  For example, if DisplayFormat is D3DFMT_X1R5G5B5,
+            # valid values for BackBufferFormat include D3DFMT_X1R5G5B5 and
+            # D3DFMT_A1R5G5B5, but exclude D3DFMT_R5G6B5.
+            if interface.name.startswith('IDirect3D8'):
+                print r'    D3DDISPLAYMODE Mode;'
+                print r'    HRESULT hr;'
+                print r'    hr = _this->GetAdapterDisplayMode(Adapter, &Mode);'
+                print r'    hr = _this->CheckDeviceType(Adapter, DeviceType, Mode.Format, pPresentationParameters->BackBufferFormat, pPresentationParameters->Windowed);'
+                print r'    if (hr == D3DERR_NOTAVAILABLE) {'
+                print r'        retrace::warning(call) << "forcing back buffer format to match display mode format\n";'
+                print r'        pPresentationParameters->BackBufferFormat = Mode.Format;'
+                print r'    };'
         
         if method.name in self.createDeviceMethodNames:
             # override the device type
@@ -133,11 +158,28 @@ class D3DRetracer(Retracer):
             print r'    retrace::frameComplete(call);'
             print r'    hDestWindowOverride = NULL;'
 
+        # Ensure textures can be locked when dumping
+        # TODO: Pre-check with CheckDeviceFormat
+        if method.name in ('CreateTexture', 'CreateCubeTexture', 'CreateVolumeTexture'):
+            print r'    if (retrace::dumpingState &&'
+            print r'        Pool == D3DPOOL_DEFAULT &&'
+            print r'        !(Usage & (D3DUSAGE_RENDERTARGET|D3DUSAGE_DEPTHSTENCIL))) {'
+            print r'        Usage |= D3DUSAGE_DYNAMIC;'
+            print r'    }'
+
         if 'pSharedHandle' in method.argNames():
             print r'    if (pSharedHandle) {'
             print r'        retrace::warning(call) << "shared surfaces unsupported\n";'
             print r'        pSharedHandle = NULL;'
             print r'    }'
+
+        if method.name in ('Lock', 'LockRect', 'LockBox'):
+            # Reset _DONOTWAIT flags. Otherwise they may fail, and we have no
+            # way to cope with it (other than retry).
+            mapFlagsArg = method.getArgByName('Flags')
+            for flag in mapFlagsArg.type.values:
+                if flag.endswith('_DONOTWAIT'):
+                    print r'    Flags &= ~%s;' % flag
 
         Retracer.invokeInterfaceMethod(self, interface, method)
 
@@ -150,22 +192,30 @@ class D3DRetracer(Retracer):
         if method.name == 'Present':
             print r'    d3dretrace::processEvents();'
 
+        def mapping_subkey():
+            if 'Level' in method.argNames():
+                return ('Level',)
+            else:
+                return ('0',)
+
         if method.name in ('Lock', 'LockRect', 'LockBox'):
             print '    VOID *_pbData = NULL;'
             print '    size_t _MappedSize = 0;'
             print '    _getMapInfo(_this, %s, _pbData, _MappedSize);' % ', '.join(method.argNames()[:-1])
             print '    if (_MappedSize) {'
-            print '        _maps[_this] = _pbData;'
+            print '        _maps[MappingKey(_this, %s)] = _pbData;' % mapping_subkey()
+            self.checkPitchMismatch(method)
             print '    } else {'
             print '        return;'
             print '    }'
         
         if method.name in ('Unlock', 'UnlockRect', 'UnlockBox'):
             print '    VOID *_pbData = 0;'
-            print '    _pbData = _maps[_this];'
+            print '    MappingKey _mappingKey(_this, %s);' % mapping_subkey()
+            print '    _pbData = _maps[_mappingKey];'
             print '    if (_pbData) {'
             print '        retrace::delRegionByPointer(_pbData);'
-            print '        _maps[_this] = 0;'
+            print '        _maps[_mappingKey] = 0;'
             print '    }'
 
 
@@ -184,9 +234,10 @@ def main():
     
     if support:
         if moduleName == 'd3d9':
-            from specs.d3d9 import d3d9
+            from specs.d3d9 import d3d9, d3dperf
             print r'#include "d3d9imports.hpp"'
             print r'#include "d3d9size.hpp"'
+            d3d9.mergeModule(d3dperf)
             api.addModule(d3d9)
             print
             print '''static d3dretrace::D3DDumper<IDirect3DDevice9> d3d9Dumper;'''

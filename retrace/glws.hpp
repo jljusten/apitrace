@@ -34,38 +34,15 @@
 #include <assert.h>
 
 #include <vector>
-#include <set>
 #include <string>
+
+#include "glprofile.hpp"
 
 
 namespace glws {
 
 
-enum Profile {
-    PROFILE_COMPAT      = 0x000,
-    PROFILE_3_0         = 0x030,
-    PROFILE_3_1         = 0x031,
-    PROFILE_3_2_CORE    = 0x132,
-    PROFILE_3_3_CORE    = 0x133,
-    PROFILE_4_0_CORE    = 0x140,
-    PROFILE_4_1_CORE    = 0x141,
-    PROFILE_4_2_CORE    = 0x142,
-    PROFILE_4_3_CORE    = 0x143,
-    PROFILE_4_4_CORE    = 0x144,
-    PROFILE_ES1         = 0x210,
-    PROFILE_ES2         = 0x220,
-    PROFILE_MAX
-};
-
-
-static inline bool
-isCoreProfile(Profile profile) {
-    return (profile & 0x100) == 0x100;
-}
-
-
-void
-getProfileVersion(Profile profile, unsigned &major, unsigned &minor, bool &core);
+using glprofile::Profile;
 
 
 bool
@@ -166,7 +143,7 @@ public:
     const Visual *visual;
     Profile profile;
     
-    std::set<std::string> extensions;
+    glprofile::Extensions extensions;
 
     Context(const Visual *vis) :
         visual(vis),
@@ -188,7 +165,7 @@ void
 cleanup(void);
 
 Visual *
-createVisual(bool doubleBuffer = false, unsigned samples = 1, Profile profile = PROFILE_COMPAT);
+createVisual(bool doubleBuffer, unsigned samples, Profile profile);
 
 Drawable *
 createDrawable(const Visual *visual, int width, int height, bool pbuffer = false);

@@ -173,8 +173,14 @@ class Comparer(Visitor):
         return True
 
     def visitValue(self, a, b):
-        if isinstance(a, float) or isinstance(b, float):
-            if a == 0:
+        if isinstance(a, float) and isinstance(b, (int, long, float)) or \
+           isinstance(b, float) and isinstance(a, (int, long, float)):
+            if a is b:
+                # NaNs take this path
+                return True
+            elif a == b:
+                return True
+            elif a == 0:
                 return abs(b) < self.tolerance
             else:
                 return abs((b - a)/a) < self.tolerance
@@ -300,6 +306,10 @@ def main():
     optparser = optparse.OptionParser(
         usage="\n\t%prog [options] <ref_json> <src_json>")
     optparser.add_option(
+        '--ignore-added',
+        action="store_true", dest="ignore_added", default=False,
+        help="ignore added state")
+    optparser.add_option(
         '--keep-images',
         action="store_false", dest="strip_images", default=True,
         help="compare images")
@@ -309,14 +319,14 @@ def main():
     if len(args) != 2:
         optparser.error('incorrect number of arguments')
 
-    a = load(open(sys.argv[1], 'rt'), options.strip_images)
-    b = load(open(sys.argv[2], 'rt'), options.strip_images)
+    a = load(open(args[0], 'rt'), options.strip_images)
+    b = load(open(args[1], 'rt'), options.strip_images)
 
     if False:
         dumper = Dumper()
         dumper.visit(a)
 
-    differ = Differ()
+    differ = Differ(ignore_added = options.ignore_added)
     differ.visit(a, b)
 
 

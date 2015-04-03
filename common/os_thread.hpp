@@ -26,37 +26,52 @@
 /*
  * OS native thread abstraction.
  *
- * Mimics C++11 threads.
+ * Mimics/leverages C++11 threads.
  */
 
-#ifndef _OS_THREAD_HPP_
-#define _OS_THREAD_HPP_
+#pragma once
+
+
+/* XXX: We still use our own implementation:
+ *
+ * - MSVC's C++11 threads implementation are hardcoded to use C++ exceptions
+ *
+ * - MinGW's C++11 threads implementation is often either missing or relies on
+ *   winpthreads
+ *
+ * - clang 3.4 (used in Travis) fails to compile some of libstdc++ C++11 thread
+ *   headers
+ */
+
+
+#ifdef HAVE_CXX11_THREADS
+
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+
+namespace os {
+
+    using std::mutex;
+    using std::recursive_mutex;
+    using std::unique_lock;
+    using std::condition_variable;
+    using std::thread;
+
+} /* namespace os */
+
+
+#else /* !HAVE_CXX11_THREADS */
 
 
 #ifdef _WIN32
-#include <windows.h>
+#  include <process.h>
+#  include <windows.h>
+#  if _WIN32_WINNT >= 0x0600
+#    define HAVE_WIN32_CONDITION_VARIABLES
+#  endif
 #else
-#include <pthread.h>
-#endif
-
-
-/*
- * This feature is not supported on Windows XP
- */
-#define USE_WIN32_CONDITION_VARIABLES 0
-
-
-/**
- * Compiler TLS.
- *
- * See also:
- * - http://gcc.gnu.org/onlinedocs/gcc-4.6.3/gcc/Thread_002dLocal.html
- * - http://msdn.microsoft.com/en-us/library/9w1sdazb.aspx
- */
-#if defined(HAVE_COMPILER_TLS)
-#  define OS_THREAD_SPECIFIC_PTR(_type) HAVE_COMPILER_TLS _type *
-#else
-#  define OS_THREAD_SPECIFIC_PTR(_type) os::thread_specific_ptr< _type >
+#  include <pthread.h>
 #endif
 
 
@@ -170,34 +185,34 @@ namespace os {
         typedef Mutex mutex_type;
 
         inline explicit
-        unique_lock(mutex_type & mutex) :
-            _mutex(&mutex)
+        unique_lock(mutex_type &m) :
+            _mutex(m)
         {
-            _mutex->lock();
+            _mutex.lock();
         }
 
         inline
         ~unique_lock() {
-            _mutex->unlock();
+            _mutex.unlock();
         }
 
         inline void
         lock() {
-            _mutex->lock();
+            _mutex.lock();
         }
 
         inline void
         unlock() {
-            _mutex->unlock();
+            _mutex.unlock();
         }
 
         mutex_type *
         mutex() const {
-            return _mutex;
+            return &_mutex;
         }
 
     protected:
-        mutex_type *_mutex;
+        mutex_type &_mutex;
     };
 
 
@@ -208,8 +223,8 @@ namespace os {
     {
     private:
 #ifdef _WIN32
-#  if USE_WIN32_CONDITION_VARIABLES
-        // XXX: Only supported on Vista an higher. Not yet supported by WINE.
+#  ifdef HAVE_WIN32_CONDITION_VARIABLES
+        // Only supported on Vista an higher. Not yet supported by WINE.
         typedef CONDITION_VARIABLE native_handle_type;
         native_handle_type _native_handle;
 #else
@@ -225,7 +240,7 @@ namespace os {
     public:
         condition_variable() {
 #ifdef _WIN32
-#  if USE_WIN32_CONDITION_VARIABLES
+#  ifdef HAVE_WIN32_CONDITION_VARIABLES
             InitializeConditionVariable(&_native_handle);
 #  else
             cWaiters = 0;
@@ -238,7 +253,7 @@ namespace os {
 
         ~condition_variable() {
 #ifdef _WIN32
-#  if USE_WIN32_CONDITION_VARIABLES
+#  ifdef HAVE_WIN32_CONDITION_VARIABLES
             /* No-op */
 #  else
             CloseHandle(hEvent);
@@ -249,9 +264,9 @@ namespace os {
         }
 
         inline void
-        signal(void) {
+        notify_one(void) {
 #ifdef _WIN32
-#  if USE_WIN32_CONDITION_VARIABLES
+#  ifdef HAVE_WIN32_CONDITION_VARIABLES
             WakeConditionVariable(&_native_handle);
 #  else
             if (cWaiters) {
@@ -267,7 +282,7 @@ namespace os {
         wait(unique_lock<mutex> & lock) {
             mutex::native_handle_type & mutex_native_handle = lock.mutex()->native_handle();
 #ifdef _WIN32
-#  if USE_WIN32_CONDITION_VARIABLES
+#  ifdef HAVE_WIN32_CONDITION_VARIABLES
             SleepConditionVariableCS(&_native_handle, &mutex_native_handle, INFINITE);
 #  else
             InterlockedIncrement(&cWaiters);
@@ -283,8 +298,13 @@ namespace os {
     };
 
 
+    /**
+     * Implement TLS through OS threading API.
+     *
+     * This will only work when T is a pointer, intptr_t, or uintptr_t.
+     */
     template <typename T>
-    class thread_specific_ptr
+    class thread_specific
     {
     private:
 #ifdef _WIN32
@@ -294,7 +314,7 @@ namespace os {
 #endif
 
     public:
-        thread_specific_ptr(void) {
+        thread_specific(void) {
 #ifdef _WIN32
             dwTlsIndex = TlsAlloc();
 #else
@@ -302,7 +322,7 @@ namespace os {
 #endif
         }
 
-        ~thread_specific_ptr() {
+        ~thread_specific() {
 #ifdef _WIN32
             TlsFree(dwTlsIndex);
 #else
@@ -310,7 +330,7 @@ namespace os {
 #endif
         }
 
-        inline T *
+        inline T
         get(void) const {
             void *ptr;
 #ifdef _WIN32
@@ -318,34 +338,35 @@ namespace os {
 #else
             ptr = pthread_getspecific(key);
 #endif
-            return static_cast<T*>(ptr);
+            return reinterpret_cast<T>(ptr);
         }
 
         inline
-        operator T * (void) const
+        operator T (void) const
         {
             return get();
         }
 
-        inline T *
+        inline T
         operator -> (void) const
         {
             return get();
         }
 
-        inline T *
-        operator = (T * new_value)
+        inline T
+        operator = (T new_value)
         {
             set(new_value);
             return new_value;
         }
 
         inline void
-        set(T* new_value) {
+        set(T new_value) {
+            void *new_ptr = reinterpret_cast<void *>(new_value);
 #ifdef _WIN32
-            TlsSetValue(dwTlsIndex, new_value);
+            TlsSetValue(dwTlsIndex, new_ptr);
 #else
-            pthread_setspecific(key, new_value);
+            pthread_setspecific(key, new_ptr);
 #endif
         }
     };
@@ -379,13 +400,10 @@ namespace os {
         }
 
         template< class Function, class Arg >
-        explicit thread( Function& f, Arg arg ) {
-#ifdef _WIN32
-            DWORD id = 0;
-            _native_handle = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)f, (LPVOID)arg, 0, &id);
-#else
-            pthread_create(&_native_handle, NULL, (void *(*) (void *))f, (void *)arg);
-#endif
+        explicit thread( Function &f, Arg arg ) {
+            typedef CallbackParam< Function, Arg > Param;
+            Param *pParam = new Param(f, arg);
+            _native_handle = _create(pParam);
         }
 
         inline thread &
@@ -411,17 +429,71 @@ namespace os {
     private:
         native_handle_type _native_handle;
 
-#if 0
-#ifdef _WIN32
-        template< class Function, class Arg >
-        static DWORD WINAPI
-        ThreadProc(LPVOID lpParameter) {
+        template< typename Function, typename Arg >
+        struct CallbackParam {
+            Function &f;
+            Arg arg;
 
-        );
+            inline
+            CallbackParam(Function &_f, Arg _arg) :
+                f(_f),
+                arg(_arg)
+            {}
+
+            inline void
+            operator () (void) {
+                f(arg);
+            }
+        };
+
+        template< typename Param >
+        static
+#ifdef _WIN32
+        unsigned __stdcall
+#else
+        void *
 #endif
+        _callback(void *lpParameter) {
+            Param *pParam = static_cast<Param *>(lpParameter);
+            (*pParam)();
+            delete pParam;
+            return 0;
+        }
+
+        template< typename Param >
+        static inline native_handle_type
+        _create(Param *pParam) {
+#ifdef _WIN32
+            uintptr_t handle =_beginthreadex(NULL, 0, &_callback<Param>, static_cast<void *>(pParam), 0, NULL);
+            return reinterpret_cast<HANDLE>(handle);
+#else
+            pthread_t t;
+            pthread_create(&t, NULL, &_callback<Param>, static_cast<void *>(pParam));
+            return t;
 #endif
+        }
     };
 
 } /* namespace os */
 
-#endif /* _OS_THREAD_HPP_ */
+
+#endif  /* !HAVE_CXX11_THREADS */
+
+
+/**
+ * Compiler TLS.
+ *
+ * See also:
+ * - http://gcc.gnu.org/onlinedocs/gcc-4.6.3/gcc/Thread_002dLocal.html
+ * - http://msdn.microsoft.com/en-us/library/9w1sdazb.aspx
+ */
+#if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0600
+#  define OS_THREAD_SPECIFIC(_type) os::thread_specific< _type >
+#elif defined(__GNUC__)
+#  define OS_THREAD_SPECIFIC(_type) __thread _type
+#elif defined(_MSC_VER)
+#  define OS_THREAD_SPECIFIC(_type) __declspec(thread) _type
+#else
+#  define OS_THREAD_SPECIFIC(_type) os::thread_specific< _type >
+#endif
+#define OS_THREAD_SPECIFIC_PTR(_type) OS_THREAD_SPECIFIC(_type *)

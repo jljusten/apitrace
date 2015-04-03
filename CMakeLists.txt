@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 2.8)
+cmake_minimum_required (VERSION 2.8.11)
 
 
 # Use clang on MacOSX. gcc doesn't support __thread key, and Apple has
@@ -8,6 +8,15 @@ if (APPLE AND NOT ANDROID_NDK)
     set (CMAKE_C_COMPILER "clang")
     set (CMAKE_CXX_COMPILER "clang++")
 endif ()
+
+if (CMAKE_GENERATOR STREQUAL "Xcode")
+    message (FATAL_ERROR "Xcode generator is not supported. Please build with \"Unix Makefiles\" or \"Ninja\" generators.")
+endif ()
+
+# http://www.cmake.org/cmake/help/v3.0/policy/CMP0042.html
+if (POLICY CMP0042)
+    cmake_policy (SET CMP0042 NEW)
+endif()
 
 
 project (apitrace)
@@ -27,11 +36,39 @@ endif ()
 # prescribed in http://www.gentoo.org/proj/en/qa/automagic.xml
 set (ENABLE_GUI "AUTO" CACHE STRING "Enable Qt GUI.")
 
-set (ENABLE_CLI true CACHE BOOL "Enable command Line interface.")
+option (ENABLE_CLI "Enable command Line interface." ON)
 
-set (ENABLE_EGL true CACHE BOOL "Enable EGL support.")
+option (ENABLE_EGL "Enable EGL support." ON)
 
-set (ENABLE_WAFFLE false CACHE BOOL "Enable WAFFLE support.")
+option (ENABLE_WAFFLE "Enable WAFFLE support." OFF)
+
+option (ENABLE_FRAME_POINTER "Disable frame pointer omission" ON)
+
+# Proprietary Linux games often ship their own libraries (zlib, libstdc++,
+# etc.) in order to ship a single set of binaries across multiple
+# distributions.  Given that apitrace wrapper modules will be loaded into those
+# processes, they must not depend on any shared object that could also be
+# provided by such applications.  See also
+# http://lists.freedesktop.org/archives/mesa-dev/2015-March/079121.html
+if (NOT ANDROID)
+    option (ENABLE_STATIC_SNAPPY "Statically link against snappy" ON)
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        option (ENABLE_STATIC_LIBGCC "Statically link LD_PRELOAD wrappers against libgcc" ON)
+        option (ENABLE_STATIC_LIBSTDCXX "Statically link LD_PRELOAD wrappers against libstdc++" ON)
+        if (NOT (ENABLE_STATIC_LIBGCC AND
+                 ENABLE_STATIC_LIBSTDCXX AND
+                 ENABLE_STATIC_SNAPPY))
+            # XXX: Should probably throw a run-time too.
+            message (WARNING
+                "LD_PRELOAD wrappers not statically linked against all "
+                "dependencies, therefore will fail to work with many "
+                "third-party applications built on different Linux "
+                "distributions and that ship their own shared-object "
+                "dependencies."
+            )
+        endif ()
+    endif ()
+endif ()
 
 
 ##############################################################################
@@ -42,17 +79,15 @@ set (ENABLE_WAFFLE false CACHE BOOL "Enable WAFFLE support.")
 # DLLs.
 if (NOT WIN32)
     include (CheckCXXSourceCompiles)
-    check_cxx_source_compiles("__thread int i; int main() { return 0; }" HAVE_COMPILER_TLS)
-    if (HAVE_COMPILER_TLS)
-        add_definitions (-DHAVE_COMPILER_TLS=__thread)
-    else ()
-        message (WARNING "C++ compiler does not support __thread keyword.")
+    check_cxx_source_compiles ("__thread int i; int main() { return 0; }" HAVE_COMPILER_TLS)
+    if (NOT HAVE_COMPILER_TLS)
+        message (FATAL_ERROR "C++ compiler does not support __thread keyword.")
     endif ()
 endif ()
 
 set (CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
-
-set (CMAKE_USE_PYTHON_VERSION 2.7 2.6)
+include (ConvenienceLibrary)
+include (InstallPDB)
 
 if (ANDROID)
     set (ENABLE_GUI false)
@@ -62,24 +97,33 @@ else ()
     endmacro()
 endif ()
 
-find_host_package (PythonInterp REQUIRED)
+find_host_package (PythonInterp 2.7 REQUIRED)
+if (NOT PYTHON_VERSION_MAJOR EQUAL 2)
+    message (FATAL_ERROR "Python 2.x required and requested, but Python ${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR} found.")
+endif ()
+
 find_package (Threads)
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package (procps)
+    if (PROCPS_FOUND)
+        add_definitions (-DHAVE_READPROC_H)
+    endif ()
+endif ()
 
 if (ENABLE_GUI)
     if (NOT (ENABLE_GUI STREQUAL "AUTO"))
         set (REQUIRE_GUI REQUIRED)
     endif ()
-    find_package (Qt4 4.7 COMPONENTS QtCore QtGui QtWebKit ${REQUIRE_GUI})
+    if (POLICY CMP0020)
+        cmake_policy (SET CMP0020 NEW)
+    endif()
+    find_package (Qt5Widgets ${REQUIRE_GUI})
+    find_package (Qt5WebKitWidgets ${REQUIRE_GUI})
 endif ()
 
 if (WIN32)
     find_package (DirectX)
-    foreach (api in D3D D3D8 D3D9 D3D10 D3D10_1 D3D11 D3D11_1 D2D1)
-        if (EXISTS "${DirectX_${api}_INCLUDE_DIR}")
-            find_package_message (${api} "Found ${api}" "${DirectX_${api}_INCLUDE_DIR}")
-        endif ()
-    endforeach ()
-
     set (ENABLE_EGL false)
 elseif (APPLE)
     set (ENABLE_EGL false)
@@ -108,25 +152,48 @@ endif ()
 include (CheckCXXCompilerFlag)
 include (CheckIncludeFileCXX)
 
+macro (add_compiler_flags)
+    string (REPLACE ";" " " _FLAGS "${ARGV}")
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${_FLAGS}")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${_FLAGS}")
+endmacro ()
+
+macro (add_linker_flags)
+    string (REPLACE ";" " " _FLAGS "${ARGV}")
+    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${_FLAGS}")
+    set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${_FLAGS}")
+    set (CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} ${_FLAGS}")
+endmacro ()
+
 if (WIN32)
     # http://msdn.microsoft.com/en-us/library/aa383745.aspx
-    add_definitions (-D_WIN32_WINNT=0x0601 -DWINVER=0x0601)
+    if (MINGW OR CMAKE_GENERATOR_TOOLSET MATCHES "_xp$")
+        # Windows XP
+        add_definitions (-D_WIN32_WINNT=0x0501 -DWINVER=0x0501)
+    else ()
+        # Windows 7
+        add_definitions (-D_WIN32_WINNT=0x0601 -DWINVER=0x0601)
+    endif ()
 else (WIN32)
     CHECK_CXX_COMPILER_FLAG("-fvisibility=hidden" CXX_COMPILER_FLAG_VISIBILITY)
     if (CXX_COMPILER_FLAG_VISIBILITY)
-        add_definitions ("-fvisibility=hidden")
+        add_compiler_flags (-fvisibility=hidden)
     endif ()
 endif ()
 
 if (MSVC)
-    # Use bundled stdint.h for older MSVC versions
-    check_include_file_cxx (stdint.h HAVE_STDINT_H)
-    if (NOT HAVE_STDINT_H)
-        include_directories (${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/msinttypes)
+    if (${MSVC_VERSION} LESS 1800)
+        message (FATAL_ERROR "Visual Studio 2013 or later required")
     endif ()
 
     # No RTTI required
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GR-")
+    string (REGEX REPLACE "/GR *" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GR-")
+
+    # Disable C++ exceptions
+    add_definitions (-D_HAS_EXCEPTIONS=0)
+    string (REGEX REPLACE "/EHsc *" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHs-c-")
 
     # Enable math constants defines
     add_definitions (-D_USE_MATH_DEFINES)
@@ -137,16 +204,17 @@ if (MSVC)
     # Adjust warnings
     add_definitions (-D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS)
     add_definitions (-D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS)
-    add_definitions (-W4)
+    add_compiler_flags (-W3)
     # XXX: it's safer to use ssize_t everywhere instead of disabling warning
-    add_definitions (-wd4018) # signed/unsigned mismatch
-    add_definitions (-wd4063) # not a valid value for switch of enum
-    add_definitions (-wd4100) # unreferenced formal parameter
-    add_definitions (-wd4127) # conditional expression is constant
-    add_definitions (-wd4244) # conversion from 'type1' to 'type2', possible loss of data
-    add_definitions (-wd4505) # unreferenced local function has been removed
-    add_definitions (-wd4512) # assignment operator could not be generated
-    add_definitions (-wd4800) # forcing value to bool 'true' or 'false' (performance warning)
+    add_compiler_flags (-wd4018) # signed/unsigned mismatch
+    add_compiler_flags (-wd4063) # not a valid value for switch of enum
+    add_compiler_flags (-wd4100) # unreferenced formal parameter
+    add_compiler_flags (-wd4127) # conditional expression is constant
+    add_compiler_flags (-wd4244) # conversion from 'type1' to 'type2', possible loss of data
+    add_compiler_flags (-wd4267) # conversion from 'type1' to 'type2', possible loss of data
+    add_compiler_flags (-wd4505) # unreferenced local function has been removed
+    add_compiler_flags (-wd4512) # assignment operator could not be generated
+    add_compiler_flags (-wd4800) # forcing value to bool 'true' or 'false' (performance warning)
     
     # Use static runtime
     # http://www.cmake.org/Wiki/CMake_FAQ#How_can_I_build_my_MSVC_application_with_a_static_runtime.3F
@@ -159,52 +227,111 @@ if (MSVC)
         endif ()
     endforeach (flag_var)
 else ()
+    # Enable and require C++11
+    #
+    # We must use `-std=gnu++11` instead `-std=c++11` as the latter defines
+    # __STRICT_ANSI__ which prevents _isnan from being declared with MinGW.
+    #
+    # See also:
+    # - https://gcc.gnu.org/projects/cxx0x.html
+    # - http://clang.llvm.org/cxx_status.html
+    check_cxx_compiler_flag ("-std=gnu++11" CXX_COMPILER_FLAG_STD_GNUXX11)
+    if (CXX_COMPILER_FLAG_STD_GNUXX11)
+        set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11")
+    elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        check_cxx_compiler_flag ("-std=gnu++0x" CXX_COMPILER_FLAG_STD_GNUXX0X)
+        if (NOT CXX_COMPILER_FLAG_STD_GNUXX0X OR
+            CMAKE_CXX_COMPILER_VERSION VERSION_LESS "4.6")
+            message (FATAL_ERROR "GCC 4.6 or later required for adequate C++11 support")
+        else ()
+            set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++0x")
+        endif ()
+    else ()
+        message (FATAL_ERROR "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} compiler does not support C++11")
+    endif ()
+
     # Adjust warnings
-    add_definitions (-Wall)
+    add_compiler_flags (-Wall)
     # XXX: it's safer to use ssize_t everywhere instead of disabling warning
-    add_definitions (-Wno-sign-compare) # comparison between signed and unsigned integer expressions
+    add_compiler_flags (-Wno-sign-compare) # comparison between signed and unsigned integer expressions
+
+    # Disable strict aliasing assumptions.  We generate a lot of C++ code, and
+    # it's not always easy to guarantee or spot when strict aliasing
+    # assumptions are violated.  Above all, the benefit is not worth the risk.
+    add_compiler_flags (-fno-strict-aliasing)
 
     # No RTTI required
-    #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
-
-    # Use GDB extensions if available
-    if (CMAKE_COMPILER_IS_GNUC)
-        set (CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -ggdb -O0")
-        set (CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -ggdb")
+    # XXX: there's a dynamic_cast in Android
+    if (NOT ANDROID)
+        set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
     endif ()
-    if (CMAKE_COMPILER_IS_GNUCXX)
-        set (CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -ggdb -O0")
-        set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -ggdb")
+
+    # Disable C++ exceptions
+    #set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions")
+
+    # Enable stack protection
+    if (CMAKE_COMPILER_IS_GNUCC AND CMAKE_COMPILER_IS_GNUCXX)
+        set (CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -fstack-protector-all")
+        set (CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fstack-protector-all")
+        if (MINGW)
+            # MinGW doesn't link against libssp automatically, and furthermore
+            # we want static linking.
+            set (SSP_LIBRARY "-Wl,-Bstatic -lssp -Wl,-Bdynamic")
+            set (CMAKE_C_STANDARD_LIBRARIES "${SSP_LIBRARY} ${CMAKE_C_STANDARD_LIBRARIES}")
+            set (CMAKE_CXX_STANDARD_LIBRARIES "${SSP_LIBRARY} ${CMAKE_CXX_STANDARD_LIBRARIES}")
+        endif ()
+    endif ()
+
+    # Enable SSE2 intrinsics on x86
+    if (CMAKE_SIZEOF_VOID_P EQUAL 4)
+        check_cxx_compiler_flag ("-msse2" CXX_COMPILER_FLAG_MSSE2)
+        if (CXX_COMPILER_FLAG_MSSE2)
+            add_compiler_flags (-msse2 -mfpmath=sse)
+
+            # And tell GCC to assume 4 bytes alignment, many Linux/Windows
+            # applications only guarantee that, but not on systems where ABI
+            # clearly states otherwise.
+            #
+            # See https://gcc.gnu.org/bugzilla/show_bug.cgi?id=38496
+            if (NOT ANDROID)
+                check_cxx_compiler_flag (-mincoming-stack-boundary=2 CXX_COMPILER_FLAG_MINCOMING_STACK_BOUNDARY)
+                if (CXX_COMPILER_FLAG_MINCOMING_STACK_BOUNDARY)
+                    add_compiler_flags (-mincoming-stack-boundary=2)
+                endif ()
+            endif ()
+        endif ()
     endif ()
 
     # Be nice to Eclipse
-    add_definitions (-fmessage-length=0)
+    add_compiler_flags (-fmessage-length=0)
 endif ()
 
 if (MINGW)
     # Avoid depending on MinGW runtime DLLs
-    check_cxx_compiler_flag (-static-libgcc HAVE_STATIC_LIBGCC_FLAG)
-    if (HAVE_STATIC_LIBGCC_FLAG)
-        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc")
-        set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static-libgcc")
-        set (CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -static-libgcc")
-    endif ()
-    check_cxx_compiler_flag (-static-libstdc++ HAVE_STATIC_LIBSTDCXX_FLAG)
-    if (HAVE_STATIC_LIBSTDCXX_FLAG)
-        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++")
-        set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static-libstdc++")
-        set (CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -static-libstdc++")
+    add_linker_flags (-static-libgcc -static-libstdc++)
+endif ()
+
+if (ENABLE_FRAME_POINTER)
+    # disable frame pointer omission
+    if (MSVC)
+        add_compiler_flags (/Oy-)
+    else ()
+        add_compiler_flags (-fno-omit-frame-pointer)
     endif ()
 endif ()
 
-if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
+# Enable Data Execution Prevention and Address Space Layout Randomization
+if (WIN32)
+    if (MSVC)
+        add_linker_flags (/NXCOMPAT /DYNAMICBASE)
+    else ()
+        add_linker_flags (-Wl,--nxcompat -Wl,--dynamicbase)
+    endif ()
+endif ()
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # For RTLD_DEFAULT and RTLD_NEXT
     add_definitions (-D_GNU_SOURCE)
-endif ()
-
-check_include_file_cxx (tr1/memory HAVE_TR1_MEMORY)
-if (HAVE_TR1_MEMORY)
-    add_definitions (-DHAVE_TR1_MEMORY)
 endif ()
 
 # Put all executables into the same top level build directory, regardless of
@@ -215,18 +342,13 @@ set (CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 ##############################################################################
 # Installation directories
 
-if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Debian multiarch support
     execute_process(COMMAND dpkg-architecture -qDEB_HOST_MULTIARCH
         OUTPUT_VARIABLE ARCH_SUBDIR
         ERROR_QUIET
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
-    CHECK_INCLUDE_FILES(proc/readproc.h READPROC_H_FOUND)
-    if (READPROC_H_FOUND)
-        add_definitions (-DHAVE_READPROC_H)
-        find_library (proc_LIBRARY NAMES proc procps)
-    endif ()
 endif()
 
 if (WIN32 OR APPLE)
@@ -252,28 +374,46 @@ set (WRAPPER_INSTALL_DIR ${LIB_ARCH_INSTALL_DIR}/wrappers)
 ##############################################################################
 # Bundled dependencies
 #
-# We always use the bundled zlib, libpng, and snappy sources:
+# We prefer to bundle and statically link against many dependencies:
 # - on Windows to make it easy to deploy the wrappers DLLs
 # - on unices to prevent symbol collisions when tracing applications that link
 # against other versions of these libraries
 
-set (ZLIB_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/zlib)
-set (ZLIB_LIBRARIES z_bundled)
-add_subdirectory (thirdparty/zlib)
-
-include_directories (${ZLIB_INCLUDE_DIRS})
-
-set (SNAPPY_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/snappy)
-set (SNAPPY_LIBRARIES snappy_bundled)
-add_subdirectory (thirdparty/snappy)
-
+if (NOT ENABLE_STATIC_SNAPPY)
+    find_package (SNAPPY)
+endif ()
+if (ENABLE_STATIC_SNAPPY OR NOT SNAPPY_FOUND)
+    set (SNAPPY_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/snappy)
+    set (SNAPPY_LIBRARIES snappy_bundled)
+    add_subdirectory (thirdparty/snappy)
+endif ()
 include_directories (${SNAPPY_INCLUDE_DIRS})
 
-set (PNG_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/libpng)
-set (PNG_DEFINITIONS "")
-set (PNG_LIBRARIES png_bundled)
+if (NOT WIN32)
+    # zlib 1.2.4-1.2.5 made it impossible to read the last block of incomplete
+    # gzip traces (e.g., apitrace-tests/traces/zlib-no-eof.trace).
+    find_package (ZLIB 1.2.6)
+endif ()
+if (NOT ZLIB_FOUND)
+    set (ZLIB_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/zlib)
+    set (ZLIB_LIBRARIES z_bundled)
+    add_subdirectory (thirdparty/zlib)
+endif ()
+include_directories (${ZLIB_INCLUDE_DIRS})
 
-add_subdirectory (thirdparty/libpng)
+# FindPNG.cmake will search ZLIB internally (without requiring any particular
+# version), adding its include dirs and libraries, and overwriting ZLIB_FOUND.
+# So if the system's ZLIB was did not meet the our requirements, then there's
+# no safe way to use the system's PNG library.
+if (NOT WIN32 AND ZLIB_FOUND)
+    find_package (PNG)
+endif ()
+if (NOT PNG_FOUND)
+    set (PNG_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/libpng)
+    set (PNG_DEFINITIONS "")
+    set (PNG_LIBRARIES png_bundled)
+    add_subdirectory (thirdparty/libpng)
+endif ()
 
 if (MSVC)
     add_subdirectory (thirdparty/getopt)
@@ -282,8 +422,9 @@ if (MSVC)
 endif ()
 
 if (WIN32)
-    add_subdirectory (thirdparty/less)
+    add_subdirectory (thirdparty/dxerr)
     add_subdirectory (thirdparty/directxtex)
+    add_subdirectory (thirdparty/devcon)
 endif ()
 
 if (CMAKE_EXECUTABLE_FORMAT STREQUAL "ELF")
@@ -297,19 +438,6 @@ add_subdirectory (thirdparty/md5)
 set (MD5_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/md5)
 set (MD5_LIBRARIES md5_bundled)
 
-# Always use bundled QJSon.
-# - The packaged versions QJson are very old, and do not support NaN/Infinity.
-# - To make it easier to build the GUI on Windows and MacOSX, as there are no
-# binaries at all.
-if (QT4_FOUND)
-    add_definitions (-DQJSON_EXPORT=)
-    add_subdirectory (thirdparty/qjson)
-    set (QJSON_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty)
-    set (QJSON_LIBRARY_DIRS)
-    set (QJSON_LIBRARIES qjson_bundled)
-    set (QJSON_FOUND TRUE)
-endif ()
-
 # We use bundled headers for all Khronos APIs, to guarantee support for both
 # OpenGL and OpenGL ES at build time, because the OpenGL and OpenGL ES 1 APIs
 # are so intertwined that conditional compilation extremely difficult. This
@@ -321,24 +449,16 @@ include_directories (BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/khronos)
 # Common libraries / utilities
 
 include_directories (
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/common
 )
 
 if (WIN32)
     set (os os_win32.cpp)
-    set (glws_os glws_wgl.cpp)
 else ()
     set (os os_posix.cpp)
-    if (APPLE)
-        set (glws_os glws_cocoa.mm)
-    else ()
-        set (glws_os glws_glx.cpp)
-    endif ()
 endif ()
 
-add_library (common STATIC
+add_convenience_library (common
     common/trace_callset.cpp
     common/trace_dump.cpp
     common/trace_fast_callset.cpp
@@ -358,16 +478,17 @@ add_library (common STATIC
     common/trace_option.cpp
     common/${os}
     common/os_backtrace.cpp
-)
-
-set_target_properties (common PROPERTIES
-    # Ensure it can be statically linked in shared libraries
-    COMPILE_FLAGS "${CMAKE_SHARED_LIBRARY_CXX_FLAGS}"
+    common/highlight.cpp
 )
 
 target_link_libraries (common
     ${LIBBACKTRACE_LIBRARIES}
 )
+if (WIN32)
+    target_link_libraries (common
+        shell32
+    )
+endif ()
 if (ANDROID)
     target_link_libraries (common
         log
@@ -415,13 +536,17 @@ if (WIN32)
         PROGRAMS scripts/convert.py
         DESTINATION ${SCRIPTS_INSTALL_DIR}
     )
+    install (
+        FILES scripts/apitrace.PIXExp
+        DESTINATION ${SCRIPTS_INSTALL_DIR}
+    )
 endif ()
 
 ##############################################################################
 # GUI
 
-if (ENABLE_GUI AND QT4_FOUND AND QJSON_FOUND)
-    add_subdirectory(gui)
+if (ENABLE_GUI AND Qt5Widgets_FOUND AND Qt5WebKitWidgets_FOUND)
+  add_subdirectory(gui)
 endif ()
 
 
@@ -430,9 +555,10 @@ endif ()
 
 install (
     FILES
-        BUGS.markdown
-        NEWS.markdown
         README.markdown
+        docs/BUGS.markdown
+        docs/NEWS.markdown
+        docs/USAGE.markdown
     DESTINATION ${DOC_INSTALL_DIR}
 )
 install (
@@ -440,15 +566,8 @@ install (
     DESTINATION ${DOC_INSTALL_DIR}
     RENAME LICENSE.txt
 )
-if (MSVC)
-    install (
-        FILES thirdparty/msinttypes/LICENSE
-        DESTINATION ${DOC_INSTALL_DIR}
-        RENAME LICENSE-msinttypes.txt
-    )
-endif ()
 
-set (CPACK_PACKAGE_VERSION_MAJOR "5")
+set (CPACK_PACKAGE_VERSION_MAJOR "7")
 set (CPACK_PACKAGE_VERSION_MINOR "0")
 
 # Use current date in YYYYMMDD format as patch number 
@@ -466,7 +585,11 @@ endif ()
 
 # See http://www.vtk.org/Wiki/CMake:CPackPackageGenerators
 if (WIN32)
-    set (CPACK_GENERATOR "ZIP")
+    if (CMAKE_VERSION VERSION_LESS 3.1)
+        set (CPACK_GENERATOR "ZIP")
+    else ()
+        set (CPACK_GENERATOR "7Z")
+    endif ()
 elseif (APPLE)
     set (CPACK_GENERATOR "DragNDrop")
 else ()

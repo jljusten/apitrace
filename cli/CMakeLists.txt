@@ -8,6 +8,11 @@ add_definitions(
     -DAPITRACE_SCRIPTS_INSTALL_DIR="${CMAKE_INSTALL_PREFIX}/${SCRIPTS_INSTALL_DIR}"
     -DAPITRACE_WRAPPERS_INSTALL_DIR="${CMAKE_INSTALL_PREFIX}/${WRAPPER_INSTALL_DIR}"
 )
+if (WIN32)
+    add_definitions (-DAPITRACE_PYTHON_EXECUTABLE="python")
+else ()
+    add_definitions (-DAPITRACE_PYTHON_EXECUTABLE="${PYTHON_EXECUTABLE}")
+endif ()
 
 add_executable (apitrace
     cli_main.cpp
@@ -36,22 +41,12 @@ target_link_libraries (apitrace
 )
 
 if (NOT CMAKE_CROSSCOMPILING)
+    # On debug builds tell where the source is so that scripts can be found
+    # http://www.cmake.org/cmake/help/v3.0/policy/CMP0043.html
     set_target_properties (apitrace PROPERTIES
-        # On debug builds tell where the source is so that scripts can be found
-        COMPILE_DEFINITIONS_DEBUG APITRACE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+        COMPILE_DEFINITIONS $<$<CONFIG:Debug>:APITRACE_SOURCE_DIR="${CMAKE_SOURCE_DIR}">
     )
 endif ()
-
-if (MSVC)
-    # On MSVC builds tell which subdirectory the binaries with be (for each
-    # configuration)
-    set_target_properties (apitrace PROPERTIES
-        COMPILE_DEFINITIONS_DEBUG APITRACE_CONFIGURATION_SUBDIR="Debug"
-        COMPILE_DEFINITIONS_RELEASE APITRACE_CONFIGURATION_SUBDIR="Release"
-        COMPILE_DEFINITIONS_MINSIZEREL APITRACE_CONFIGURATION_SUBDIR="MinSizeRel"
-        COMPILE_DEFINITIONS_RELWITHDEBINFO APITRACE_CONFIGURATION_SUBDIR="RelWithDebInfo"
-    )
-endif ()
-
 
 install (TARGETS apitrace RUNTIME DESTINATION bin)
+install_pdb (apitrace RUNTIME DESTINATION bin)

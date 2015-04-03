@@ -104,6 +104,9 @@ addRegion(unsigned long long address, void *buffer, unsigned long long size);
 void
 delRegionByPointer(void *ptr);
 
+void
+toRange(trace::Value &value, void * & ptr, size_t & len);
+
 void *
 toPointer(trace::Value &value, bool bind = false);
 
@@ -116,6 +119,12 @@ delObj(trace::Value &value);
 
 void *
 toObjPointer(trace::Call &call, trace::Value &value);
+
+template< class T >
+inline T *
+asObjPointer(trace::Call &call, trace::Value &value) {
+    return static_cast<T *>(toObjPointer(call, value));
+}
 
 
 } /* namespace retrace */

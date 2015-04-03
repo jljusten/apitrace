@@ -33,13 +33,7 @@
 #include <stddef.h>
 #include <wchar.h>
 
-#ifdef _MSC_VER
-#  include <float.h>
-#  define isfinite _finite
-#  define isnan _isnan
-#else
-#  include <math.h> // isfinite, isnan
-#endif
+#include <cmath> // for std::isinf, std::isnan; as C99 macros are unavailable in C++11
 
 #include <iomanip>
 #include <limits>
@@ -145,10 +139,10 @@ public:
     void
     writeFloat(T n) {
         separator();
-        if (isnan(n)) {
+        if (std::isnan(n)) {
             // NaN is non-standard but widely supported
             os << "NaN";
-        } else if (!isfinite(n)) {
+        } else if (std::isinf(n)) {
             // Infinite is non-standard but widely supported
             if (n < 0) {
                 os << '-';
@@ -177,14 +171,39 @@ public:
 
     template<class T>
     inline void
+    writeFloatMember(const char *name, T f) {
+        beginMember(name);
+        writeFloat(f);
+        endMember();
+    }
+
+    template<class T>
+    inline void
     writeIntMember(const char *name, T n) {
         beginMember(name);
         writeInt(n);
         endMember();
     }
 
+    struct ImageDesc {
+        unsigned depth;
+        std::string format;
+
+        ImageDesc() :
+            depth(1),
+            format("UNKNOWN")
+        {}
+    };
+
     void
-    writeImage(image::Image *image, const char *format, unsigned depth = 1);
+    writeImage(image::Image *image, const ImageDesc & desc);
+
+    void
+    writeImage(image::Image *image) {
+        ImageDesc desc;
+        writeImage(image, desc);
+    }
+
 };
 
 #endif /* _JSON_HPP_ */

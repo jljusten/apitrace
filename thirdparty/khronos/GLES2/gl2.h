@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 /*
-** Copyright (c) 2013 The Khronos Group Inc.
+** Copyright (c) 2013-2014 The Khronos Group Inc.
 **
 ** Permission is hereby granted, free of charge, to any person obtaining a
 ** copy of this software and/or associated documentation files (the
@@ -33,10 +33,12 @@ extern "C" {
 ** used to make the header, and the header can be found at
 **   http://www.opengl.org/registry/
 **
-** Khronos $Revision$ on $Date$
+** Khronos $Revision: 28689 $ on $Date: 2014-10-21 17:30:22 -0700 (Tue, 21 Oct 2014) $
 */
 
 #include <GLES2/gl2platform.h>
+
+/* Generated on date 20141021 */
 
 /* Generated C header for:
  * API: gles2
