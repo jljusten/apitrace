@@ -127,8 +127,7 @@ escapeUnicodeString(std::ostream &os, const char *str) {
             os << (unsigned char)c;
         } else {
             // unicode
-            os << "\\u" << std::setfill('0') << std::hex << std::setw(4) << (unsigned)c;
-            os << std::dec;
+            os << "\\u" << std::hex << std::setfill('0') << std::setw(4) << (unsigned)c << std::setfill(' ') << std::dec;
         }
     } while (src);
 
@@ -302,8 +301,10 @@ JSONWriter::writeBool(bool b) {
 }
 
 void
-JSONWriter::writeImage(image::Image *image, const char *format, unsigned depth)
+JSONWriter::writeImage(image::Image *image,
+                       const ImageDesc & desc)
 {
+    assert(image);
     if (!image) {
         writeNull();
         return;
@@ -315,10 +316,14 @@ JSONWriter::writeImage(image::Image *image, const char *format, unsigned depth)
     writeStringMember("__class__", "image");
 
     writeIntMember("__width__", image->width);
-    writeIntMember("__height__", image->height / depth);
-    writeIntMember("__depth__", depth);
+    writeIntMember("__height__", image->height / desc.depth);
+    writeIntMember("__depth__", desc.depth);
 
-    writeStringMember("__format__", format);
+    writeStringMember("__format__", desc.format.c_str());
+
+    if (!image->label.empty()) {
+        writeStringMember("__label__", image->label.c_str());
+    }
 
     beginMember("__data__");
     std::stringstream ss;

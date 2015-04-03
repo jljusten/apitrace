@@ -33,6 +33,8 @@
 
 #include <iostream>
 
+#include <string>
+
 
 namespace image {
 
@@ -57,6 +59,8 @@ public:
 
     // Pixels in RGBA format
     unsigned char *pixels;
+
+    std::string label;
 
     inline Image(unsigned w, unsigned h, unsigned c = 4, bool f = false, ChannelType t = TYPE_UNORM8) :
         width(w),
@@ -112,10 +116,10 @@ public:
     writeMD5(std::ostream &os) const;
 
     bool
-    writePNG(std::ostream &os) const;
+    writePNG(std::ostream &os, bool strip_alpha = false) const;
 
     bool
-    writePNG(const char *filename) const;
+    writePNG(const char *filename, bool strip_alpha = false) const;
 
     void
     writeRAW(std::ostream &os) const;
@@ -138,6 +142,7 @@ struct PNMInfo
     unsigned height;
     unsigned channels;
     ChannelType channelType;
+    int commentNumber;
 };
 
 const char *

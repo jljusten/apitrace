@@ -28,6 +28,8 @@
 
 
 #include "glimports.hpp"
+#include "glproc.hpp"
+#include "image.hpp"
 
 
 class JSONWriter;
@@ -38,22 +40,28 @@ namespace glstate {
 
 struct Context
 {
-    bool ES;
+    unsigned ES:1;
+    unsigned core:1;
 
-    bool ARB_draw_buffers;
-    bool ARB_sampler_objects;
-    bool KHR_debug;
-    bool EXT_debug_label;
+    unsigned ARB_draw_buffers:1;
+    unsigned ARB_sampler_objects:1;
+    unsigned KHR_debug:1;
+    unsigned EXT_debug_label:1;
 
     Context(void);
+};
 
-    void
-    resetPixelPackState(void);
 
-    void
-    restorePixelPackState(void);
+class PixelPackState
+{
+public:
+    PixelPackState(const Context & context);
+
+    ~PixelPackState();
 
 private:
+    bool ES;
+
     // Pack state
     GLint pack_alignment;
     GLint pack_image_height;
@@ -67,9 +75,88 @@ private:
 };
 
 
+static inline void
+flushErrors(void) {
+    while (glGetError() != GL_NO_ERROR) {
+    }
+}
+
+
+
+const char *
+formatToString(GLenum internalFormat);
+
+
+struct InternalFormatDesc
+{
+    GLenum internalFormat;
+
+    /* The external format/type that matches the internalFormat exactly, or GL_NONE. */
+    GLenum format;
+    GLenum type;
+};
+
+
+const InternalFormatDesc &
+getInternalFormatDesc(GLenum internalFormat);
+
+void
+chooseReadBackFormat(const InternalFormatDesc &formatDesc, GLenum &format, GLenum &type);
+
+void
+getImageFormat(GLenum format, GLenum type,
+               GLuint &channels, image::ChannelType &channelType);
+
+
+/**
+ * Helper class to temporarily bind a buffer to the specified target until
+ * control leaves the declaration scope.
+ */
+class BufferBinding
+{
+private:
+    GLenum target;
+    GLuint buffer;
+    GLuint prevBuffer;
+
+public:
+    BufferBinding(GLenum _target, GLuint _buffer);
+
+    ~BufferBinding();
+};
+
+
+/**
+ * Helper class to temporarily map a buffer (if necessary), and unmap when
+ * destroyed.
+ */
+class BufferMapping
+{
+    GLuint target;
+    GLuint buffer;
+    GLvoid *map_pointer;
+    bool unmap;
+
+public:
+    BufferMapping();
+
+    GLvoid *
+    map(GLenum _target, GLuint _buffer);
+
+    ~BufferMapping();
+};
+
+
+bool
+isGeometryShaderBound(Context &context);
+
+
 void dumpBoolean(JSONWriter &json, GLboolean value);
 
 void dumpEnum(JSONWriter &json, GLenum pname);
+
+char *
+getObjectLabel(Context &context, GLenum identifier, GLuint name);
 
 void dumpObjectLabel(JSONWriter &json, Context &context, GLenum identifier, GLuint name, const char *member);
 

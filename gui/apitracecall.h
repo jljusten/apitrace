@@ -17,9 +17,6 @@ class TraceLoader;
 class VariantVisitor : public trace::Visitor
 {
 public:
-    VariantVisitor(TraceLoader *loader)
-        : m_loader(loader)
-    {}
     virtual void visit(trace::Null *);
     virtual void visit(trace::Bool *node);
     virtual void visit(trace::SInt *node);
@@ -27,6 +24,7 @@ public:
     virtual void visit(trace::Float *node);
     virtual void visit(trace::Double *node);
     virtual void visit(trace::String *node);
+    virtual void visit(trace::WString *node);
     virtual void visit(trace::Enum *e);
     virtual void visit(trace::Bitmask *bitmask);
     virtual void visit(trace::Struct *str);
@@ -40,7 +38,6 @@ public:
         return m_variant;
     }
 private:
-    TraceLoader *m_loader;
     QVariant m_variant;
 };
 
@@ -52,29 +49,16 @@ struct ApiTraceError
     QString message;
 };
 
-class ApiTraceEnumSignature
-{
-public:
-    ApiTraceEnumSignature(const trace::EnumSig *sig);
-
-    QString name(signed long long value) const;
-
-private:
-    typedef QList<QPair<QString, signed long long> > ValueList;
-    ValueList m_names;
-};
-
 class ApiEnum
 {
 public:
-    ApiEnum(ApiTraceEnumSignature *sig=0, signed long long value = 0);
+    ApiEnum(const trace::EnumSig *sig=0, signed long long value = 0);
 
     QString toString() const;
 
     QVariant value() const;
-    QString name() const;
 private:
-    ApiTraceEnumSignature *m_sig;
+    const trace::EnumSig *m_sig;
     signed long long m_value;
 };
 Q_DECLARE_METATYPE(ApiEnum);
@@ -165,6 +149,7 @@ public:
     const QVariantMap & parameters() const;
     const QMap<QString, QString> & shaderSources() const;
     const QVariantMap & uniforms() const;
+    const QVariantMap & buffers() const;
     const QList<ApiTexture> & textures() const;
     const QList<ApiFramebuffer> & framebuffers() const;
 
@@ -173,6 +158,7 @@ private:
     QVariantMap m_parameters;
     QMap<QString, QString> m_shaderSources;
     QVariantMap m_uniforms;
+    QVariantMap m_buffers;
     QList<ApiTexture> m_textures;
     QList<ApiFramebuffer> m_framebuffers;
 };
@@ -225,7 +211,6 @@ public:
     virtual int callIndex(ApiTraceCall *call) const = 0;
     virtual ApiTraceEvent *eventAtRow(int row) const = 0;
 
-    QVariantMap stateParameters() const;
     ApiTraceState *state() const;
     void setState(ApiTraceState *state);
     bool hasState() const
@@ -233,13 +218,19 @@ public:
         return m_state && !m_state->isEmpty();
     }
 
+    void setThumbnail(const QImage & thumbnail);
+    const QImage & thumbnail() const;
+
+    virtual void missingThumbnail() = 0;
+
 protected:
     int m_type : 4;
-    mutable bool m_hasBinaryData;
     mutable int m_binaryDataIndex:8;
     ApiTraceState *m_state;
 
     mutable QStaticText *m_staticText;
+
+    QImage m_thumbnail;
 };
 Q_DECLARE_METATYPE(ApiTraceEvent*);
 
@@ -297,11 +288,15 @@ public:
 
     QString backtrace() const;
     void setBacktrace(QString backtrace);
+
+    void missingThumbnail();
+
 private:
     void loadData(TraceLoader *loader,
                   const trace::Call *tcall);
 private:
     int m_index;
+    unsigned m_thread;
     ApiTraceCallSignature *m_signature;
     QVector<QVariant> m_argValues;
     QVariant m_returnValue;
@@ -362,8 +357,7 @@ public:
     void setLastCallIndex(unsigned index);
     unsigned lastCallIndex() const;
 
-    void setThumbnail(const QImage & thumbnail);
-    const QImage & thumbnail() const;
+    void missingThumbnail();
 
 private:
     ApiTrace *m_parentTrace;
@@ -373,7 +367,6 @@ private:
     bool m_loaded;
     unsigned m_callsToLoad;
     unsigned m_lastCallIndex;
-    QImage m_thumbnail;
 };
 Q_DECLARE_METATYPE(ApiTraceFrame*);
 

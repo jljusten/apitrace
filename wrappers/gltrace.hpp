@@ -33,15 +33,10 @@
 
 #include "glimports.hpp"
 
+#include "glprofile.hpp"
+
 
 namespace gltrace {
-
-
-enum Profile {
-    PROFILE_COMPAT,
-    PROFILE_ES1,
-    PROFILE_ES2,
-};
 
 
 /**
@@ -91,10 +86,10 @@ public:
 
 class Context {
 public:
-    enum Profile profile;
+    glprofile::Profile profile;
     bool user_arrays;
-    bool user_arrays_arb;
     bool user_arrays_nv;
+    bool userArraysOnBegin;
     unsigned retain_count;
 
     // Whether it has been bound before
@@ -104,10 +99,10 @@ public:
     std::map <GLuint, Buffer> buffers;
 
     Context(void) :
-        profile(PROFILE_COMPAT),
+        profile(glprofile::API_GL, 1, 0),
         user_arrays(false),
-        user_arrays_arb(false),
         user_arrays_nv(false),
+        userArraysOnBegin(false),
         retain_count(0),
         bound(false)
     { }
@@ -115,7 +110,7 @@ public:
     inline bool
     needsShadowBuffers(void)
     {
-        return profile == PROFILE_ES1 || profile == PROFILE_ES2;
+        return profile.es();
     }
 };
 

@@ -26,6 +26,7 @@
 #ifdef _WIN32
 
 #include <windows.h>
+#include <shlobj.h>
 
 #include <assert.h>
 #include <string.h>
@@ -68,6 +69,20 @@ getCurrentDir(void)
     buf[size - 1] = 0;
     path.truncate();
 
+    return path;
+}
+
+String
+getConfigDir(void)
+{
+    String path;
+    char *buf = path.buf(MAX_PATH);
+    HRESULT hr = SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, buf);
+    if (SUCCEEDED(hr)) {
+        path.truncate();
+    } else {
+        path.truncate(0);
+    }
     return path;
 }
 
@@ -240,6 +255,22 @@ void
 abort(void)
 {
     TerminateProcess(GetCurrentProcess(), 1);
+#if defined(__GNUC__)
+     __builtin_unreachable();
+#endif
+}
+
+
+void
+breakpoint(void)
+{
+#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
+    asm("int3");
+#elif defined(_MSC_VER)
+    __debugbreak();
+#else
+    DebugBreak();
+#endif
 }
 
 
@@ -253,6 +284,21 @@ static void (*gCallback)(void) = NULL;
 static LONG CALLBACK
 unhandledExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo)
 {
+    /*
+     * Before Vista KiUserExceptionDispatcher does not clear the direction
+     * flag.
+     *
+     * See also:
+     * - http://code.google.com/p/nativeclient/issues/detail?id=1495
+     */
+#ifdef _MSC_VER
+#ifndef _WIN64
+    __asm cld;
+#endif
+#else
+    asm("cld");
+#endif
+
     PEXCEPTION_RECORD pExceptionRecord = pExceptionInfo->ExceptionRecord;
 
     /*
@@ -263,14 +309,20 @@ unhandledExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo)
     }
 
     /*
-     * Ignore C++ exceptions
+     * Ignore C++ exceptions, as some applications generate a lot of these with
+     * no harm.  But don't ignore them on debug builds, as bugs in apitrace can
+     * easily lead the applicationa and/or runtime to raise them, and catching
+     * them helps debugging.
      *
-     * http://support.microsoft.com/kb/185294
-     * http://blogs.msdn.com/b/oldnewthing/archive/2010/07/30/10044061.aspx
+     * See also:
+     * - http://blogs.msdn.com/b/oldnewthing/archive/2010/07/30/10044061.aspx
+     * - http://support.microsoft.com/kb/185294
      */
+#ifdef NDEBUG
     if (pExceptionRecord->ExceptionCode == 0xe06d7363) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
+#endif
 
     /*
      * Ignore thread naming exception.
@@ -289,17 +341,6 @@ unhandledExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo)
     if (pExceptionRecord->ExceptionCode == 0xe0434352) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-
-    // Clear direction flag
-#ifdef _MSC_VER
-#ifndef _WIN64
-    __asm {
-        cld
-    };
-#endif
-#else
-    asm("cld");
-#endif
 
     log("apitrace: warning: caught exception 0x%08lx\n", pExceptionRecord->ExceptionCode);
 

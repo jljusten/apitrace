@@ -28,8 +28,11 @@
 
 #include "glproc.hpp"
 #include "retrace.hpp"
+#include "retrace_swizzle.hpp"
 #include "glretrace.hpp"
 
+
+#define kCGLNoError 0
 
 #define kCGLPFAAllRenderers            1
 #define kCGLPFATripleBuffer            3
@@ -97,6 +100,16 @@ static DrawableMap context_drawable_map;
 static Context *sharedContext = NULL;
 
 
+struct PixelFormat
+{
+    glprofile::Profile profile;
+
+    PixelFormat() :
+        profile(glprofile::API_GL, 1, 0)
+    {}
+};
+
+
 static glws::Drawable *
 getDrawable(unsigned long drawable_id) {
     if (drawable_id == 0) {
@@ -151,6 +164,10 @@ getContext(unsigned long long ctx) {
 
 
 static void retrace_CGLChoosePixelFormat(trace::Call &call) {
+    if (call.ret->toUInt() != kCGLNoError) {
+        return;
+    }
+
     int profile = 0;
 
     const trace::Array * attribs = call.arg(0).toArray();
@@ -167,7 +184,6 @@ static void retrace_CGLChoosePixelFormat(trace::Call &call) {
             case kCGLPFATripleBuffer:
             case kCGLPFADoubleBuffer:
             case kCGLPFAStereo:
-            case kCGLPFAAuxBuffers:
             case kCGLPFAMinimumPolicy:
             case kCGLPFAMaximumPolicy:
             case kCGLPFAOffScreen:
@@ -199,6 +215,7 @@ static void retrace_CGLChoosePixelFormat(trace::Call &call) {
             case kCGLPFAAlphaSize:
             case kCGLPFADepthSize:
             case kCGLPFAStencilSize:
+            case kCGLPFAAuxBuffers:
             case kCGLPFAAccumSize:
             case kCGLPFASampleBuffers:
             case kCGLPFASamples:
@@ -219,27 +236,55 @@ static void retrace_CGLChoosePixelFormat(trace::Call &call) {
         }
     }
 
+    trace::Value & pix = call.argByName("pix")[0];
+
+    PixelFormat *pixelFormat = new PixelFormat;
+
     // TODO: Do this on a per visual basis
     switch (profile) {
     case 0:
         break;
     case kCGLOGLPVersion_Legacy:
-        glretrace::defaultProfile = glws::PROFILE_COMPAT;
+        pixelFormat->profile = glprofile::Profile(glprofile::API_GL, 1, 0);
         break;
     case kCGLOGLPVersion_GL3_Core:
-        glretrace::defaultProfile = glws::PROFILE_3_2_CORE;
+        pixelFormat->profile = glprofile::Profile(glprofile::API_GL, 3, 2, true, true);
         break;
     case kCGLOGLPVersion_GL4_Core:
-        glretrace::defaultProfile = glws::PROFILE_4_1_CORE;
+        pixelFormat->profile = glprofile::Profile(glprofile::API_GL, 4, 1, true, true);
         break;
     default:
         retrace::warning(call) << "unexpected opengl profile " << std::hex << profile << std::dec << "\n";
         break;
     }
+
+    retrace::addObj(call, pix, pixelFormat);
+}
+
+
+static void retrace_CGLDestroyPixelFormat(trace::Call &call) {
+    if (call.ret->toUInt() != kCGLNoError) {
+        return;
+    }
+
+    trace::Value & pix = call.argByName("pix");
+
+    PixelFormat *pixelFormat = retrace::asObjPointer<PixelFormat>(call, pix);
+    delete pixelFormat;
+
+    retrace::delObj(pix);
 }
 
 
 static void retrace_CGLCreateContext(trace::Call &call) {
+    if (call.ret->toUInt() != kCGLNoError) {
+        return;
+    }
+
+    trace::Value & pix = call.argByName("pix");
+    const PixelFormat *pixelFormat = retrace::asObjPointer<PixelFormat>(call, pix);
+    glprofile::Profile profile = pixelFormat ? pixelFormat->profile : glretrace::defaultProfile;
+
     unsigned long long share = call.arg(1).toUIntPtr();
     Context *sharedContext = getContext(share);
 
@@ -247,12 +292,16 @@ static void retrace_CGLCreateContext(trace::Call &call) {
     assert(ctx_ptr);
     unsigned long long ctx = ctx_ptr->values[0]->toUIntPtr();
 
-    Context *context = glretrace::createContext(sharedContext);
+    Context *context = glretrace::createContext(sharedContext, profile);
     context_map[ctx] = context;
 }
 
 
 static void retrace_CGLDestroyContext(trace::Call &call) {
+    if (call.ret->toUInt() != kCGLNoError) {
+        return;
+    }
+
     unsigned long long ctx = call.arg(0).toUIntPtr();
 
     ContextMap::iterator it;
@@ -268,6 +317,10 @@ static void retrace_CGLDestroyContext(trace::Call &call) {
 
 
 static void retrace_CGLSetSurface(trace::Call &call) {
+    if (call.ret->toUInt() != kCGLNoError) {
+        return;
+    }
+
     unsigned long long ctx = call.arg(0).toUIntPtr();
     unsigned long long cid = call.arg(1).toUInt();
     int wid = call.arg(2).toUInt();
@@ -283,6 +336,10 @@ static void retrace_CGLSetSurface(trace::Call &call) {
 
 
 static void retrace_CGLClearDrawable(trace::Call &call) {
+    if (call.ret->toUInt() != kCGLNoError) {
+        return;
+    }
+
     unsigned long long ctx = call.arg(0).toUIntPtr();
 
     context_drawable_map[ctx] = NULL;
@@ -290,6 +347,10 @@ static void retrace_CGLClearDrawable(trace::Call &call) {
 
 
 static void retrace_CGLSetCurrentContext(trace::Call &call) {
+    if (call.ret->toUInt() != kCGLNoError) {
+        return;
+    }
+
     unsigned long long ctx = call.arg(0).toUIntPtr();
 
     glws::Drawable *new_drawable = getDrawableFromContext(ctx);
@@ -300,6 +361,10 @@ static void retrace_CGLSetCurrentContext(trace::Call &call) {
 
 
 static void retrace_CGLFlushDrawable(trace::Call &call) {
+    if (call.ret->toUInt() != kCGLNoError) {
+        return;
+    }
+
     unsigned long long ctx = call.arg(0).toUIntPtr();
     Context *context = getContext(ctx);
 
@@ -330,6 +395,10 @@ static void retrace_CGLFlushDrawable(trace::Call &call) {
  * - /System/Library/Frameworks/OpenGL.framework/Headers/CGLIOSurface.h
  */
 static void retrace_CGLTexImageIOSurface2D(trace::Call &call) {
+    if (call.ret->toUInt() != kCGLNoError) {
+        return;
+    }
+
     if (retrace::debug) {
         retrace::warning(call) << "external IOSurface not supported\n";
     }
@@ -382,7 +451,7 @@ const retrace::Entry glretrace::cgl_callbacks[] = {
     {"CGLDescribePixelFormat", &retrace::ignore},
     {"CGLDescribeRenderer", &retrace::ignore},
     {"CGLDestroyContext", &retrace_CGLDestroyContext},
-    {"CGLDestroyPixelFormat", &retrace::ignore},
+    {"CGLDestroyPixelFormat", &retrace_CGLDestroyPixelFormat},
     {"CGLDisable", &retrace::ignore},
     {"CGLEnable", &retrace::ignore},
     {"CGLErrorString", &retrace::ignore},
@@ -393,10 +462,12 @@ const retrace::Entry glretrace::cgl_callbacks[] = {
     {"CGLGetVersion", &retrace::ignore},
     {"CGLGetVirtualScreen", &retrace::ignore},
     {"CGLIsEnabled", &retrace::ignore},
+    {"CGLLockContext", &retrace::ignore},
     {"CGLSetCurrentContext", &retrace_CGLSetCurrentContext},
     {"CGLSetSurface", &retrace_CGLSetSurface},
     {"CGLSetParameter", &retrace::ignore},
     {"CGLTexImageIOSurface2D", &retrace_CGLTexImageIOSurface2D},
+    {"CGLUnlockContext", &retrace::ignore},
     {"CGLUpdateContext", &retrace::ignore},
     {NULL, NULL},
 };

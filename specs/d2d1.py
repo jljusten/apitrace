@@ -25,8 +25,7 @@
 
 
 from winapi import *
-from dxgiformat import DXGI_FORMAT
-from dxgi import IDXGISurface
+from dxgi import DXGI_FORMAT, IDXGISurface
 from d2derr import *
 from d2dbasetypes import *
 from dwrite import *
@@ -554,7 +553,7 @@ ID2D1RenderTarget.methods += [
     StdMethod(Void, "FillMesh", [(ObjPointer(ID2D1Mesh), "mesh"), (ObjPointer(ID2D1Brush), "brush")]),
     StdMethod(Void, "FillOpacityMask", [(ObjPointer(ID2D1Bitmap), "opacityMask"), (ObjPointer(ID2D1Brush), "brush"), (D2D1_OPACITY_MASK_CONTENT, "content"), (Pointer(Const(D2D1_RECT_F)), "destinationRectangle"), (Pointer(Const(D2D1_RECT_F)), "sourceRectangle")]),
     StdMethod(Void, "DrawBitmap", [(ObjPointer(ID2D1Bitmap), "bitmap"), (Pointer(Const(D2D1_RECT_F)), "destinationRectangle"), (FLOAT, "opacity"), (D2D1_BITMAP_INTERPOLATION_MODE, "interpolationMode"), (Pointer(Const(D2D1_RECT_F)), "sourceRectangle")]),
-    StdMethod(Void, "DrawText", [(Pointer(Const(WCHAR)), "string"), (UINT, "stringLength"), (ObjPointer(IDWriteTextFormat), "textFormat"), (Pointer(Const(D2D1_RECT_F)), "layoutRect"), (ObjPointer(ID2D1Brush), "defaultForegroundBrush"), (D2D1_DRAW_TEXT_OPTIONS, "options"), (DWRITE_MEASURING_MODE, "measuringMode")]),
+    StdMethod(Void, "DrawText", [(String(Const(WCHAR), "stringLength", wide=True), "string"), (UINT, "stringLength"), (ObjPointer(IDWriteTextFormat), "textFormat"), (Pointer(Const(D2D1_RECT_F)), "layoutRect"), (ObjPointer(ID2D1Brush), "defaultForegroundBrush"), (D2D1_DRAW_TEXT_OPTIONS, "options"), (DWRITE_MEASURING_MODE, "measuringMode")]),
     StdMethod(Void, "DrawTextLayout", [(D2D1_POINT_2F, "origin"), (ObjPointer(IDWriteTextLayout), "textLayout"), (ObjPointer(ID2D1Brush), "defaultForegroundBrush"), (D2D1_DRAW_TEXT_OPTIONS, "options")]),
     StdMethod(Void, "DrawGlyphRun", [(D2D1_POINT_2F, "baselineOrigin"), (Pointer(Const(DWRITE_GLYPH_RUN)), "glyphRun"), (ObjPointer(ID2D1Brush), "foregroundBrush"), (DWRITE_MEASURING_MODE, "measuringMode")]),
     StdMethod(Void, "SetTransform", [(Pointer(Const(D2D1_MATRIX_3X2_F)), "transform")]),

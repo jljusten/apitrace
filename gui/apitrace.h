@@ -12,6 +12,9 @@ class TraceLoader;
 class SaverThread;
 class QThread;
 
+typedef void (*ThumbnailCallback)(void *object, int thumbnailIdx);
+typedef QHash<int, QImage> ImageHash;
+
 class ApiTrace : public QObject
 {
     Q_OBJECT
@@ -77,6 +80,14 @@ public:
 
     trace::API api() const;
 
+    void missingThumbnail(ApiTraceFrame* frame);
+    void missingThumbnail(ApiTraceCall* call);
+
+    bool isMissingThumbnails() const;
+    void resetMissingThumbnails();
+
+    void iterateMissingThumbnails(void *object, ThumbnailCallback cb);
+
 public slots:
     void setFileName(const QString &name);
     void save();
@@ -95,7 +106,7 @@ public slots:
     void findCallIndex(int index);
     void setCallError(const ApiTraceError &error);
 
-    void bindThumbnailsToFrames(const QList<QImage> &thumbnails);
+    void bindThumbnails(const ImageHash &thumbnails);
 
 signals:
     void loadTrace(const QString &name);
@@ -141,6 +152,8 @@ private slots:
 private:
     int callInFrame(int callIdx) const;
     bool isFrameLoading(ApiTraceFrame *frame) const;
+
+    void missingThumbnail(int callIdx);
 private:
     QString m_fileName;
     QString m_tempFileName;
@@ -159,6 +172,10 @@ private:
     QSet<ApiTraceCall*> m_errors;
     QList< QPair<ApiTraceFrame*, ApiTraceError> > m_queuedErrors;
     QSet<ApiTraceFrame*> m_loadingFrames;
+
+    QSet<int> m_missingThumbnails;
+
+    ImageHash m_thumbnails;
 };
 
 #endif

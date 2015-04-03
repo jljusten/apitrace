@@ -31,8 +31,11 @@
 #include <stdlib.h>
 
 #include <unistd.h>
+#include <errno.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <pwd.h>
 #include <fcntl.h>
 #include <signal.h>
 
@@ -103,8 +106,18 @@ getProcessName(void)
             }
         }
     }
+
+#ifdef __GLIBC__
+    // fallback to `program_invocation_name`
     if (len <= 0) {
-        // fallback to process ID
+        len = strlen(program_invocation_name);
+        buf = path.buf(len + 1);
+        strcpy(buf, program_invocation_name);
+    }
+#endif
+
+    // fallback to process ID
+    if (len <= 0) {
         len = snprintf(buf, size, "%i", (int)getpid());
         if (len >= size) {
             len = size - 1;
@@ -127,6 +140,45 @@ getCurrentDir(void)
     buf[size - 1] = 0;
     
     path.truncate();
+    return path;
+}
+
+String
+getConfigDir(void)
+{
+    String path;
+
+#ifdef __APPLE__
+    // Library/Preferences
+    const char *homeDir = getenv("HOME");
+    assert(homeDir);
+    if (homeDir) {
+        path = homeDir;
+        path.join("Library/Preferences");
+    }
+#else
+    // http://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html
+    const char *configHomeDir = getenv("XDG_CONFIG_HOME");
+    if (configHomeDir) {
+        path = configHomeDir;
+    } else {
+        const char *homeDir = getenv("HOME");
+        if (!homeDir) {
+            struct passwd *user = getpwuid(getuid());
+            if (user != NULL) {
+                homeDir = user->pw_dir;
+            }
+        }
+        assert(homeDir);
+        if (homeDir) {
+            path = homeDir;
+#if !defined(ANDROID)
+            path.join(".config");
+#endif
+        }
+    }
+#endif
+
     return path;
 }
 
@@ -220,6 +272,17 @@ void
 abort(void)
 {
     _exit(1);
+}
+
+
+void
+breakpoint(void)
+{
+#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
+    asm("int3");
+#else
+    kill(getpid(), SIGTRAP);
+#endif
 }
 
 
@@ -341,6 +404,43 @@ resetExceptionCallback(void)
 {
     gCallback = NULL;
 }
+
+#ifdef __ANDROID__
+#include "os_memory.hpp"
+#include <cassert>
+#include <cstdio>
+
+#include <fcntl.h>
+#include <unistd.h>
+
+char statmBuff[256];
+static __uint64_t pageSize = sysconf(_SC_PAGESIZE);
+
+static long size, resident;
+
+static inline void parseStatm()
+{
+    int fd = open("/proc/self/statm", O_RDONLY, 0);
+    int sz = read(fd, statmBuff, 255);
+    close(fd);
+    statmBuff[sz] = 0;
+    sz = sscanf(statmBuff, "%ld %ld",
+               &size, &resident);
+    assert(sz == 2);
+}
+
+long long getVsize()
+{
+    parseStatm();
+    return pageSize * size;
+}
+
+long long getRss()
+{
+    parseStatm();
+    return pageSize * resident;
+}
+#endif
 
 } /* namespace os */
 

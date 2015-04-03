@@ -32,9 +32,11 @@
 #include <getopt.h>
 
 #include <iostream>
+#include <fstream>
 
 #include "os_string.hpp"
 #include "os_process.hpp"
+#include "os_version.hpp"
 
 #include "cli.hpp"
 #include "cli_resources.hpp"
@@ -51,6 +53,8 @@
 #define EGL_TRACE_WRAPPER  "egltrace.so"
 #endif
 
+
+#ifdef _WIN32
 
 static inline bool
 copyWrapper(const os::String & wrapperPath,
@@ -81,12 +85,15 @@ copyWrapper(const os::String & wrapperPath,
     return true;
 }
 
+#endif /* _WIN32 */
+
 
 static int
 traceProgram(trace::API api,
              char * const *argv,
              const char *output,
-             bool verbose)
+             bool verbose,
+             bool debug)
 {
     const char *wrapperFilename;
     std::vector<const char *> args;
@@ -120,6 +127,10 @@ traceProgram(trace::API api,
         wrapperFilename = "dxgitrace.dll";
         useInject = true;
         break;
+    case trace::API_D2D1:
+        wrapperFilename = "d2d1trace.dll";
+        useInject = true;
+        break;
 #endif
     default:
         std::cerr << "error: unsupported API\n";
@@ -135,23 +146,9 @@ traceProgram(trace::API api,
 #if defined(_WIN32)
     /*
      * Use DLL injection method on Windows, even for APIs that don't stricly
-     * need it.  Except when tracing OpenGL on Windows 8, as the injection
-     * method seems to have troubles tracing the internal
-     * gdi32.dll!SwapBuffers -> opengl32.dll!wglSwapBuffer calls, per github
-     * issue #172.
+     * need it.
      */
-    {
-        OSVERSIONINFO osvi;
-        ZeroMemory(&osvi, sizeof osvi);
-        osvi.dwOSVersionInfoSize = sizeof osvi;
-        GetVersionEx(&osvi);
-        BOOL bIsWindows8orLater =
-            osvi.dwMajorVersion > 6 ||
-            (osvi.dwMajorVersion == 6 && osvi.dwMinorVersion >= 2);
-        if (api != trace::API_GL || !bIsWindows8orLater) {
-            useInject = true;
-        }
-    }
+    useInject = true;
 
     if (useInject) {
         args.push_back("inject");
@@ -186,8 +183,56 @@ traceProgram(trace::API api,
             wrapperPath.append(oldEnvVarValue);
         }
 
-        /* FIXME: Don't modify our (ie parent) environment */
-        os::setEnvironment(TRACE_VARIABLE, wrapperPath.str());
+        std::string ex;
+        if (debug) {
+#if defined(__APPLE__)
+            bool lldb = true;
+#else
+            bool lldb = false;
+#endif
+
+            if (lldb) {
+                /*
+                 * Debug with LLDB.
+                 *
+                 * See also http://lldb.llvm.org/lldb-gdb.html
+                 */
+
+                char scriptFileName[] = "/tmp/apitrace.XXXXXX";
+                int scriptFD = mkstemp(scriptFileName);
+                if (scriptFD < 0) {
+                    std::cerr << "error: failed to create temporary lldb script file\n";
+                    exit(1);
+                }
+
+                FILE *scriptStream = fdopen(scriptFD, "w");
+                fprintf(scriptStream, "env " TRACE_VARIABLE "='%s'\n", wrapperPath.str());
+                fclose(scriptStream);
+
+                args.push_back("lldb");
+                args.push_back("-s");
+                args.push_back(scriptFileName);
+                args.push_back("--");
+            } else {
+                /*
+                 * Debug with GDB.
+                 */
+
+                ex = "set exec-wrapper env " TRACE_VARIABLE "='";
+                ex.append(wrapperPath.str());
+                ex.append("'");
+
+                args.push_back("gdb");
+                args.push_back("--ex");
+                args.push_back(ex.c_str());
+                args.push_back("--args");
+            }
+
+            os::unsetEnvironment(TRACE_VARIABLE);
+        } else {
+            /* FIXME: Don't modify our (ie parent) environment */
+            os::setEnvironment(TRACE_VARIABLE, wrapperPath.str());
+        }
 
         if (verbose) {
             std::cerr << TRACE_VARIABLE << "=" << wrapperPath.str() << "\n";
@@ -205,7 +250,13 @@ traceProgram(trace::API api,
         if (verbose) {
             const char *sep = "";
             for (unsigned i = 0; i < args.size(); ++i) {
-                std::cerr << sep << args[i];
+                const char *quote;
+                if (strchr(args[i], ' ') != NULL) {
+                    quote = "\"";
+                } else {
+                    quote = "";
+                }
+                std::cerr << sep << quote << args[i] << quote;
                 sep = " ";
             }
             std::cerr << "\n";
@@ -266,11 +317,15 @@ usage(void)
                                                       ");\n"
         "                        default is `gl`\n"
         "    -o, --output=TRACE  specify output trace file;\n"
-        "                        default is `PROGRAM.trace`\n";
+        "                        default is `PROGRAM.trace`\n"
+#ifdef TRACE_VARIABLE
+        "    -d,  --debug        run inside debugger (gdb/lldb)\n"
+#endif
+    ;
 }
 
 const static char *
-shortOptions = "+hva:o:";
+shortOptions = "+hva:o:d";
 
 const static struct option
 longOptions[] = {
@@ -278,6 +333,7 @@ longOptions[] = {
     {"verbose", no_argument, 0, 'v'},
     {"api", required_argument, 0, 'a'},
     {"output", required_argument, 0, 'o'},
+    {"debug", no_argument, 0, 'd'},
     {0, 0, 0, 0}
 };
 
@@ -287,6 +343,7 @@ command(int argc, char *argv[])
     bool verbose = false;
     trace::API api = trace::API_GL;
     const char *output = NULL;
+    bool debug = false;
 
     int opt;
     while ((opt = getopt_long(argc, argv, shortOptions, longOptions, NULL)) != -1) {
@@ -314,6 +371,9 @@ command(int argc, char *argv[])
                        strcmp(optarg, "d3d11") == 0 ||
                        strcmp(optarg, "d3d11_1") == 0) {
                 api = trace::API_DXGI;
+            } else if (strcmp(optarg, "d2d") == 0 ||
+                       strcmp(optarg, "d2d1") == 0) {
+                api = trace::API_D2D1;
             } else {
                 std::cerr << "error: unknown API `" << optarg << "`\n";
                 usage();
@@ -322,6 +382,9 @@ command(int argc, char *argv[])
             break;
         case 'o':
             output = optarg;
+            break;
+        case 'd':
+            debug = true;
             break;
         default:
             std::cerr << "error: unexpected option `" << (char)opt << "`\n";
@@ -337,7 +400,7 @@ command(int argc, char *argv[])
     }
 
     assert(argv[argc] == 0);
-    return traceProgram(api, argv + optind, output, verbose);
+    return traceProgram(api, argv + optind, output, verbose, debug);
 }
 
 const Command trace_command = {

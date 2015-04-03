@@ -28,9 +28,7 @@
 #include <fstream>
 #include "image.hpp"
 
-extern "C" {
-    #include "md5.h"
-}
+#include "md5.h"
 
 
 using namespace std;
@@ -55,7 +53,7 @@ Image::writeMD5(std::ostream &os) const {
         csig[2*i    ] = hex[signature[i] >> 4];
         csig[2*i + 1] = hex[signature[i] & 0xf];
     }
-    csig[33] = '\0';
+    csig[32] = '\0';
 
     os << csig;
     os << "\n";

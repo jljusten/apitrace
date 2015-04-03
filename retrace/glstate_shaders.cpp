@@ -31,6 +31,7 @@
 #include <iostream>
 #include <map>
 #include <sstream>
+#include <vector>
 
 #include "json.hpp"
 #include "glproc.hpp"
@@ -77,45 +78,13 @@ getShaderSource(ShaderMap &shaderMap, GLuint shader)
 }
 
 
-static void
-getShaderObjSource(ShaderMap &shaderMap, GLhandleARB shaderObj)
-{
-    if (!shaderObj) {
-        return;
-    }
-
-    GLint object_type = 0;
-    glGetObjectParameterivARB(shaderObj, GL_OBJECT_TYPE_ARB, &object_type);
-    if (object_type != GL_SHADER_OBJECT_ARB) {
-        return;
-    }
-
-    GLint shader_type = 0;
-    glGetObjectParameterivARB(shaderObj, GL_OBJECT_SUBTYPE_ARB, &shader_type);
-    if (!shader_type) {
-        return;
-    }
-
-    GLint source_length = 0;
-    glGetObjectParameterivARB(shaderObj, GL_OBJECT_SHADER_SOURCE_LENGTH_ARB, &source_length);
-    if (!source_length) {
-        return;
-    }
-
-    GLcharARB *source = new GLcharARB[source_length];
-    GLsizei length = 0;
-    source[0] = 0;
-    glGetShaderSource(shaderObj, source_length, &length, source);
-
-    shaderMap[enumToString(shader_type)] += source;
-
-    delete [] source;
-}
-
-
 static inline void
 dumpProgram(JSONWriter &json, GLint program)
 {
+    if (program <= 0) {
+        return;
+    }
+
     GLint attached_shaders = 0;
     glGetProgramiv(program, GL_ATTACHED_SHADERS, &attached_shaders);
     if (!attached_shaders) {
@@ -140,33 +109,6 @@ dumpProgram(JSONWriter &json, GLint program)
     }
 }
 
-
-static inline void
-dumpProgramObj(JSONWriter &json, GLhandleARB programObj)
-{
-    GLint attached_shaders = 0;
-    glGetObjectParameterivARB(programObj, GL_OBJECT_ATTACHED_OBJECTS_ARB, &attached_shaders);
-    if (!attached_shaders) {
-        return;
-    }
-
-    ShaderMap shaderMap;
-
-    GLhandleARB *shaderObjs = new GLhandleARB[attached_shaders];
-    GLsizei count = 0;
-    glGetAttachedObjectsARB(programObj, attached_shaders, &count, shaderObjs);
-    std::sort(shaderObjs, shaderObjs + count);
-    for (GLsizei i = 0; i < count; ++ i) {
-       getShaderObjSource(shaderMap, shaderObjs[i]);
-    }
-    delete [] shaderObjs;
-
-    for (ShaderMap::const_iterator it = shaderMap.begin(); it != shaderMap.end(); ++it) {
-        json.beginMember(it->first);
-        json.writeString(it->second);
-        json.endMember();
-    }
-}
 
 /**
  * Built-in uniforms can't be queried through glGetUniform*.
@@ -203,37 +145,89 @@ resolveUniformName(const GLchar *name,  GLint size)
 }
 
 
-static void
-dumpUniformValues(JSONWriter &json, GLenum type, const void *values, GLint matrix_stride = 0, GLboolean is_row_major = GL_FALSE) {
+struct AttribDesc
+{
+    GLenum type;
+    GLenum size;
+
     GLenum elemType;
-    GLint numCols, numRows;
-    _gl_uniform_size(type, elemType, numCols, numRows);
-    if (!numCols || !numRows) {
-        json.writeNull();
+    GLint elemStride;
+
+    GLint numCols;
+    GLint numRows;
+
+    GLsizei rowStride;
+    GLsizei colStride;
+
+    GLsizei arrayStride;
+
+    AttribDesc() :
+        type(GL_NONE),
+        size(0),
+        elemType(GL_NONE),
+        elemStride(0),
+        numCols(0),
+        numRows(0),
+        rowStride(0),
+        colStride(0),
+        arrayStride(0)
+    {}
+
+    AttribDesc(GLenum _type,
+               GLint _size,
+               GLint array_stride = 0,
+               GLint matrix_stride = 0,
+               GLboolean is_row_major = GL_FALSE) :
+        type(_type),
+        size(_size)
+    {
+        _gl_uniform_size(type, elemType, numCols, numRows);
+
+        elemStride = _gl_type_size(elemType);
+
+        rowStride = 0;
+        colStride = 0;
+        if (is_row_major) {
+            rowStride = elemStride;
+            if (!matrix_stride) {
+                matrix_stride = numRows * elemStride;
+            }
+            colStride = matrix_stride;
+        } else {
+            colStride = elemStride;
+            if (!matrix_stride) {
+                matrix_stride = numCols * elemStride;
+            }
+            rowStride = matrix_stride;
+        }
+
+        arrayStride = array_stride ? array_stride : size * matrix_stride;
     }
 
-    size_t elemSize = _gl_type_size(elemType);
-
-    GLint row_stride = 0;
-    GLint col_stride = 0;
-    if (is_row_major) {
-        row_stride = elemSize;
-        col_stride = matrix_stride ? matrix_stride : numRows * elemSize;
-    } else {
-        col_stride = elemSize;
-        row_stride = matrix_stride ? matrix_stride : numCols * elemSize;
+    inline
+    operator bool (void) const {
+        return elemType != GL_NONE;
     }
+};
 
-    if (numRows > 1) {
+
+static void
+dumpAttrib(JSONWriter &json,
+           const AttribDesc &desc,
+           const GLbyte *data)
+{
+    assert(desc);
+
+    if (desc.numRows > 1) {
         json.beginArray();
     }
 
-    for (GLint row = 0; row < numRows; ++row) {
-        if (numCols > 1) {
+    for (GLint row = 0; row < desc.numRows; ++row) {
+        if (desc.numCols > 1) {
             json.beginArray();
         }
 
-        for (GLint col = 0; col < numCols; ++col) {
+        for (GLint col = 0; col < desc.numCols; ++col) {
             union {
                 const GLbyte *rawvalue;
                 const GLfloat *fvalue;
@@ -242,9 +236,9 @@ dumpUniformValues(JSONWriter &json, GLenum type, const void *values, GLint matri
                 const GLuint *uivalue;
             } u;
 
-            u.rawvalue = (const GLbyte *)values + row*row_stride + col*col_stride;
+            u.rawvalue = data + row*desc.rowStride + col*desc.colStride;
 
-            switch (elemType) {
+            switch (desc.elemType) {
             case GL_FLOAT:
                 json.writeFloat(*u.fvalue);
                 break;
@@ -267,14 +261,38 @@ dumpUniformValues(JSONWriter &json, GLenum type, const void *values, GLint matri
             }
         }
 
-        if (numCols > 1) {
+        if (desc.numCols > 1) {
             json.endArray();
         }
     }
 
-    if (numRows > 1) {
+    if (desc.numRows > 1) {
         json.endArray();
     }
+}
+
+
+static void
+dumpAttribArray(JSONWriter &json,
+                const std::string & name,
+                const AttribDesc &desc,
+                const GLbyte *data)
+{
+    json.beginMember(name);
+    if (desc.size > 1) {
+        json.beginArray();
+    }
+
+    for (GLint i = 0; i < desc.size; ++i) {
+        const GLbyte *row = data + desc.arrayStride*i;
+
+        dumpAttrib(json, desc, row);
+    }
+
+    if (desc.size > 1) {
+        json.endArray();
+    }
+    json.endMember();
 }
 
 
@@ -282,7 +300,14 @@ dumpUniformValues(JSONWriter &json, GLenum type, const void *values, GLint matri
  * Dump an uniform that belows to an uniform block.
  */
 static void
-dumpUniformBlock(JSONWriter &json, GLint program, GLint size, GLenum type, const GLchar *name, GLuint index, GLuint block_index) {
+dumpUniformBlock(JSONWriter &json,
+                 GLint program,
+                 GLint size,
+                 GLenum type,
+                 const GLchar *name,
+                 GLuint index,
+                 GLuint block_index)
+{
 
     GLint offset = 0;
     GLint array_stride = 0;
@@ -299,6 +324,11 @@ dumpUniformBlock(JSONWriter &json, GLint program, GLint size, GLenum type, const
         return;
     }
 
+    AttribDesc desc(type, size, array_stride, matrix_stride, is_row_major);
+    if (!desc) {
+        return;
+    }
+
     if (0) {
         GLint active_uniform_block_max_name_length = 0;
         glGetProgramiv(program, GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH, &active_uniform_block_max_name_length);
@@ -312,7 +342,7 @@ dumpUniformBlock(JSONWriter &json, GLint program, GLint size, GLenum type, const
         glGetActiveUniformBlockName(program, index, active_uniform_block_max_name_length, &length, block_name);
 
         std::cerr
-            << "uniform `" << name << "`, size " << size << ", type " << enumToString(type) << "\n"
+            << "uniform `" << name << "`, size " << size << ", type " << enumToString(desc.type) << "\n"
             << "  block " << block_index << ", name `" << block_name << "`, size " << block_data_size << "; binding " << slot << "; \n"
             << "  offset " << offset << ", array stride " << array_stride << ", matrix stride " << matrix_stride << ", row_major " << is_row_major << "\n"
         ;
@@ -322,48 +352,26 @@ dumpUniformBlock(JSONWriter &json, GLint program, GLint size, GLenum type, const
 
     GLint ubo = 0;
     glGetIntegeri_v(GL_UNIFORM_BUFFER_BINDING, slot, &ubo);
+    GLint start = 0;
+    glGetIntegeri_v(GL_UNIFORM_BUFFER_START, slot, &start);
 
-    GLint previous_ubo = 0;
-    glGetIntegerv(GL_UNIFORM_BUFFER_BINDING, &previous_ubo);
-
-    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
-
-    const GLbyte *raw_data = (const GLbyte *)glMapBuffer(GL_UNIFORM_BUFFER, GL_READ_ONLY);
+    BufferMapping mapping;
+    const GLbyte *raw_data = (const GLbyte *)mapping.map(GL_UNIFORM_BUFFER, ubo);
     if (raw_data) {
         std::string qualifiedName = resolveUniformName(name, size);
 
-        for (GLint i = 0; i < size; ++i) {
-            std::stringstream ss;
-            ss << qualifiedName;
-
-            if (size > 1) {
-                ss << '[' << i << ']';
-            }
-
-            std::string elemName = ss.str();
-
-            json.beginMember(elemName);
-
-            const GLbyte *row = raw_data + offset + array_stride*i;
-
-            dumpUniformValues(json, type, row, matrix_stride, is_row_major);
-
-            json.endMember();
-        }
-
-        glUnmapBuffer(GL_UNIFORM_BUFFER);
+        dumpAttribArray(json, qualifiedName, desc, raw_data + start + offset);
     }
-
-    glBindBuffer(GL_UNIFORM_BUFFER, previous_ubo);
 }
 
 
 static void
-dumpUniform(JSONWriter &json, GLint program, GLint size, GLenum type, const GLchar *name) {
-    GLenum elemType;
-    GLint numCols, numRows;
-    _gl_uniform_size(type, elemType, numCols, numRows);
-    if (elemType == GL_NONE) {
+dumpUniform(JSONWriter &json,
+            GLint program,
+            const AttribDesc & desc,
+            const GLchar *name)
+{
+    if (desc.elemType == GL_NONE) {
         return;
     }
 
@@ -372,20 +380,24 @@ dumpUniform(JSONWriter &json, GLint program, GLint size, GLenum type, const GLch
         GLdouble dvalues[4*4];
         GLint ivalues[4*4];
         GLuint uivalues[4*4];
+        GLbyte data[4*4*4];
     } u;
 
     GLint i;
 
-    std::string qualifiedName = resolveUniformName(name, size);
+    std::string qualifiedName = resolveUniformName(name, desc.size);
 
-    for (i = 0; i < size; ++i) {
+    json.beginMember(qualifiedName);
+    if (desc.size > 1) {
+        json.beginArray();
+    }
+
+    for (i = 0; i < desc.size; ++i) {
         std::stringstream ss;
         ss << qualifiedName;
-
-        if (size > 1) {
+        if (desc.size > 1) {
             ss << '[' << i << ']';
         }
-
         std::string elemName = ss.str();
 
         GLint location = glGetUniformLocation(program, elemName.c_str());
@@ -394,9 +406,7 @@ dumpUniform(JSONWriter &json, GLint program, GLint size, GLenum type, const GLch
             continue;
         }
 
-        json.beginMember(elemName);
-
-        switch (elemType) {
+        switch (desc.elemType) {
         case GL_FLOAT:
             glGetUniformfv(program, location, u.fvalues);
             break;
@@ -417,79 +427,14 @@ dumpUniform(JSONWriter &json, GLint program, GLint size, GLenum type, const GLch
             break;
         }
 
-        dumpUniformValues(json, type, &u);
-
-        json.endMember();
-    }
-}
-
-
-static void
-dumpUniformARB(JSONWriter &json, GLhandleARB programObj, GLint size, GLenum type, const GLchar *name) {
-    GLenum elemType;
-    GLint numCols, numRows;
-    _gl_uniform_size(type, elemType, numCols, numRows);
-    GLint numElems = numCols * numRows;
-    if (elemType == GL_NONE) {
-        return;
+        dumpAttrib(json, desc, u.data);
     }
 
-    GLfloat fvalues[4*4];
-    union {
-        GLdouble dvalues[4*4];
-        GLfloat fvalues[4*4];
-        GLint ivalues[4*4];
-    } u;
-
-    GLint i, j;
-
-    std::string qualifiedName = resolveUniformName(name, size);
-
-    for (i = 0; i < size; ++i) {
-        std::stringstream ss;
-        ss << qualifiedName;
-
-        if (size > 1) {
-            ss << '[' << i << ']';
-        }
-
-        std::string elemName = ss.str();
-
-        json.beginMember(elemName);
-
-        GLint location = glGetUniformLocationARB(programObj, elemName.c_str());
-        if (location == -1) {
-            continue;
-        }
-
-        switch (elemType) {
-        case GL_DOUBLE:
-            // glGetUniformdvARB does not exists
-            glGetUniformfvARB(programObj, location, fvalues);
-            for (j = 0; j < numElems; ++j) {
-                u.dvalues[j] = fvalues[j];
-            }
-            break;
-        case GL_FLOAT:
-            glGetUniformfvARB(programObj, location, fvalues);
-            break;
-        case GL_UNSIGNED_INT:
-            // glGetUniformuivARB does not exists
-        case GL_INT:
-            glGetUniformivARB(programObj, location, u.ivalues);
-            break;
-        case GL_BOOL:
-            glGetUniformivARB(programObj, location, u.ivalues);
-            break;
-        default:
-            assert(0);
-            break;
-        }
-
-        dumpUniformValues(json, type, &u);
-
-        json.endMember();
+    if (desc.size > 1) {
+        json.endArray();
     }
+
+    json.endMember();
 }
 
 
@@ -521,7 +466,8 @@ dumpProgramUniforms(JSONWriter &json, GLint program)
 
         GLint location = glGetUniformLocation(program, name);
         if (location != -1) {
-            dumpUniform(json, program, size, type, name);
+            AttribDesc desc(type, size);
+            dumpUniform(json, program, desc, name);
             continue;
         }
 
@@ -542,43 +488,178 @@ dumpProgramUniforms(JSONWriter &json, GLint program)
 }
 
 
-static inline void
-dumpProgramObjUniforms(JSONWriter &json, GLhandleARB programObj)
+// Calculate how many elements (or vertices) can fit in the specified buffer.
+static unsigned
+calcNumElements(GLsizei bufferSize,
+                GLsizei elemOffset,
+                GLsizei elemSize,
+                GLsizei elemStride)
 {
-    GLint active_uniforms = 0;
-    glGetObjectParameterivARB(programObj, GL_OBJECT_ACTIVE_UNIFORMS_ARB, &active_uniforms);
-    if (!active_uniforms) {
+    if (0 >= bufferSize ||
+        elemOffset >= bufferSize ||
+        elemOffset + elemSize >= bufferSize) {
+        return 0;
+    }
+
+    assert(elemStride >= 0);
+    if (elemStride < 0) {
+        return 1;
+    }
+
+    if (elemStride == 0) {
+        // XXX: It should be infinite, but lets return something more manageable here.
+        return 0x10000;
+    }
+
+    return (bufferSize - elemOffset - elemSize) / elemStride;
+}
+
+
+struct TransformFeedbackAttrib {
+    std::string name;
+    AttribDesc desc;
+    GLsizei offset;
+    GLsizei stride;
+    GLsizei size;
+    BufferMapping mapping;
+    const GLbyte *map;
+};
+
+
+static inline void
+dumpTransformFeedback(JSONWriter &json, GLint program)
+{
+    GLint transform_feedback_varyings = 0;
+    glGetProgramiv(program, GL_TRANSFORM_FEEDBACK_VARYINGS, &transform_feedback_varyings);
+    if (!transform_feedback_varyings) {
         return;
     }
 
-    GLint active_uniform_max_length = 0;
-    glGetObjectParameterivARB(programObj, GL_OBJECT_ACTIVE_UNIFORM_MAX_LENGTH_ARB, &active_uniform_max_length);
-    GLchar *name = new GLchar[active_uniform_max_length];
-    if (!name) {
-        return;
-    }
+    GLint max_name_length = 0;
+    glGetProgramiv(program, GL_TRANSFORM_FEEDBACK_VARYING_MAX_LENGTH, &max_name_length);
+    std::vector<GLchar> name(max_name_length);
 
-    for (GLint index = 0; index < active_uniforms; ++index) {
+    GLint buffer_mode = GL_INTERLEAVED_ATTRIBS;
+    glGetProgramiv(program, GL_TRANSFORM_FEEDBACK_BUFFER_MODE, &buffer_mode);
+
+    std::vector<TransformFeedbackAttrib> attribs(transform_feedback_varyings);
+
+    // Calculate the offsets and strides of each attribute according to
+    // the value of GL_TRANSFORM_FEEDBACK_BUFFER_MODE
+    GLsizei cum_attrib_offset = 0;
+    for (GLint slot = 0; slot < transform_feedback_varyings; ++slot) {
+        TransformFeedbackAttrib & attrib = attribs[slot];
+
         GLsizei length = 0;
-        GLint size = 0;
+        GLsizei size = 0;
         GLenum type = GL_NONE;
-        glGetActiveUniformARB(programObj, index, active_uniform_max_length, &length, &size, &type, name);
+        glGetTransformFeedbackVarying(program, slot, max_name_length, &length, &size, &type, &name[0]);
 
-    if (isBuiltinUniform(name)) {
-        continue;
+        attrib.name = &name[0];
+
+        const AttribDesc & desc = attrib.desc = AttribDesc(type, size);
+        if (!desc) {
+            return;
+        }
+
+        attrib.size = desc.arrayStride;
+
+        switch (buffer_mode) {
+        case GL_INTERLEAVED_ATTRIBS:
+            attrib.offset = cum_attrib_offset;
+            break;
+        case GL_SEPARATE_ATTRIBS:
+            attrib.offset = 0;
+            attrib.stride = desc.arrayStride;
+            break;
+        default:
+            assert(0);
+            attrib.offset = 0;
+            attrib.stride = 0;
+        }
+
+        cum_attrib_offset += desc.arrayStride;
+    }
+    if (buffer_mode == GL_INTERLEAVED_ATTRIBS) {
+        for (GLint slot = 0; slot < transform_feedback_varyings; ++slot) {
+            TransformFeedbackAttrib & attrib = attribs[slot];
+            attrib.stride = cum_attrib_offset;
+        }
     }
 
-        dumpUniformARB(json, programObj, size, type, name);
-    }
+    GLint previous_tbo = 0;
+    glGetIntegerv(GL_TRANSFORM_FEEDBACK_BUFFER_BINDING, &previous_tbo);
 
-    delete [] name;
+    // Map the buffers and calculate how many vertices can they hold
+    // XXX: We currently limit to 1024, or things can get significantly slow.
+    unsigned numVertices = 16*1024;
+    for (GLint slot = 0; slot < transform_feedback_varyings; ++slot) {
+        TransformFeedbackAttrib & attrib = attribs[slot];
+        attrib.map = NULL;
+        if (slot == 0 || buffer_mode != GL_INTERLEAVED_ATTRIBS) {
+            GLint tbo = 0;
+            glGetIntegeri_v(GL_TRANSFORM_FEEDBACK_BUFFER_BINDING, slot, &tbo);
+            if (!tbo) {
+                numVertices = 0;
+                continue;
+            }
+
+            GLint start = 0;
+            glGetIntegeri_v(GL_TRANSFORM_FEEDBACK_BUFFER_START, slot, &start);
+            GLint size = 0;
+            glGetIntegeri_v(GL_TRANSFORM_FEEDBACK_BUFFER_SIZE, slot, &size);
+
+            glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo);
+
+            if (size == 0) {
+                glGetBufferParameteriv(GL_TRANSFORM_FEEDBACK_BUFFER, GL_BUFFER_SIZE, &size);
+                assert(size >= start);
+                size -= start;
+            }
+
+            unsigned numAttribVertices = calcNumElements(size,
+                                                         attrib.offset,
+                                                         attrib.size,
+                                                         attrib.stride);
+            numVertices = std::min(numVertices, numAttribVertices);
+
+            attrib.map = (const GLbyte *)attrib.mapping.map(GL_TRANSFORM_FEEDBACK_BUFFER, tbo) + start;
+        } else {
+            attrib.map = attribs[0].map;
+        }
+    }
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, previous_tbo);
+
+    // Actually dump the vertices
+    json.beginMember("GL_TRANSFORM_FEEDBACK");
+    json.beginArray();
+    for (unsigned vertex = 0; vertex < numVertices; ++vertex) {
+        json.beginObject();
+        for (GLint slot = 0; slot < transform_feedback_varyings; ++slot) {
+            TransformFeedbackAttrib & attrib = attribs[slot];
+            if (!attrib.map) {
+                continue;
+            }
+
+            const AttribDesc & desc = attrib.desc;
+            assert(desc);
+
+            const GLbyte *vertex_data = attrib.map + attrib.stride*vertex + attrib.offset;
+            dumpAttribArray(json, attrib.name, desc, vertex_data);
+        }
+        json.endObject();
+    }
+    json.endArray();
+    json.endMember();
 }
 
 
 static inline void
-dumpArbProgram(JSONWriter &json, GLenum target)
+dumpArbProgram(JSONWriter &json, Context &context, GLenum target)
 {
-    if (!glIsEnabled(target)) {
+    if (context.ES ||
+        context.core ||
+        !glIsEnabled(target)) {
         return;
     }
 
@@ -602,9 +683,11 @@ dumpArbProgram(JSONWriter &json, GLenum target)
 
 
 static inline void
-dumpArbProgramUniforms(JSONWriter &json, GLenum target, const char *prefix)
+dumpArbProgramUniforms(JSONWriter &json, Context &context, GLenum target, const char *prefix)
 {
-    if (!glIsEnabled(target)) {
+    if (context.ES ||
+        context.core ||
+        !glIsEnabled(target)) {
         return;
     }
 
@@ -664,13 +747,15 @@ dumpArbProgramUniforms(JSONWriter &json, GLenum target, const char *prefix)
 static void
 dumpProgramUniformsStage(JSONWriter &json, GLint program, const char *stage)
 {
-    if (program) {
-        json.beginMember(stage);
-        json.beginObject();
-        dumpProgramUniforms(json, program);
-        json.endObject();
-        json.endMember();
+    if (program <= 0) {
+        return;
     }
+
+    json.beginMember(stage);
+    json.beginObject();
+    dumpProgramUniforms(json, program);
+    json.endObject();
+    json.endMember();
 }
 
 void
@@ -697,12 +782,8 @@ dumpShadersUniforms(JSONWriter &json, Context &context)
     }
 
     GLint program = 0;
-    GLhandleARB programObj = 0;
     if (!pipeline) {
         glGetIntegerv(GL_CURRENT_PROGRAM, &program);
-        if (!context.ES && !program) {
-            programObj = glGetHandleARB(GL_PROGRAM_OBJECT_ARB);
-        }
     }
 
     json.beginMember("shaders");
@@ -716,11 +797,9 @@ dumpShadersUniforms(JSONWriter &json, Context &context)
         dumpProgram(json, compute_program);
     } else if (program) {
         dumpProgram(json, program);
-    } else if (programObj) {
-        dumpProgramObj(json, programObj);
     } else {
-        dumpArbProgram(json, GL_FRAGMENT_PROGRAM_ARB);
-        dumpArbProgram(json, GL_VERTEX_PROGRAM_ARB);
+        dumpArbProgram(json, context, GL_FRAGMENT_PROGRAM_ARB);
+        dumpArbProgram(json, context, GL_VERTEX_PROGRAM_ARB);
     }
     json.endObject();
     json.endMember(); // shaders
@@ -736,14 +815,71 @@ dumpShadersUniforms(JSONWriter &json, Context &context)
         dumpProgramUniformsStage(json, compute_program, "GL_COMPUTE_SHADER");
     } else if (program) {
         dumpProgramUniforms(json, program);
-    } else if (programObj) {
-        dumpProgramObjUniforms(json, programObj);
     } else {
-        dumpArbProgramUniforms(json, GL_FRAGMENT_PROGRAM_ARB, "fp.");
-        dumpArbProgramUniforms(json, GL_VERTEX_PROGRAM_ARB, "vp.");
+        dumpArbProgramUniforms(json, context, GL_FRAGMENT_PROGRAM_ARB, "fp.");
+        dumpArbProgramUniforms(json, context, GL_VERTEX_PROGRAM_ARB, "vp.");
     }
     json.endObject();
     json.endMember(); // uniforms
+
+    json.beginMember("buffers");
+    json.beginObject();
+    if (program) {
+        dumpTransformFeedback(json, program);
+    }
+    json.endObject();
+    json.endMember(); // buffers
+}
+
+
+bool
+isGeometryShaderBound(Context &context)
+{
+    GLint pipeline = 0;
+    GLint program = 0;
+
+    if (!context.ES) {
+        glGetIntegerv(GL_PROGRAM_PIPELINE_BINDING, &pipeline);
+        if (pipeline) {
+            glGetProgramPipelineiv(pipeline, GL_GEOMETRY_SHADER, &program);
+        }
+    }
+
+    if (!pipeline) {
+        glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    }
+
+    if (!program) {
+        return false;
+    }
+
+    GLint attached_shaders = 0;
+    glGetProgramiv(program, GL_ATTACHED_SHADERS, &attached_shaders);
+    if (!attached_shaders) {
+        return false;
+    }
+
+    GLuint *shaders = new GLuint[attached_shaders];
+    GLsizei count = 0;
+    glGetAttachedShaders(program, attached_shaders, &count, shaders);
+    for (GLsizei i = 0; i < count; ++i) {
+        GLuint shader = shaders[i];
+        if (!shader) {
+            continue;
+        }
+
+        GLint shader_type = 0;
+        glGetShaderiv(shader, GL_SHADER_TYPE, &shader_type);
+
+        if (shader_type == GL_GEOMETRY_SHADER) {
+            delete [] shaders;
+            return true;
+        }
+    }
+
+    delete [] shaders;
+
+    return false;
 }
 
 

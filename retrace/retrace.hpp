@@ -35,6 +35,10 @@
 #include <map>
 #include <ostream>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "trace_model.hpp"
 #include "trace_parser.hpp"
 #include "trace_profiler.hpp"
@@ -62,7 +66,7 @@ public:
      * Allocate an array with the same dimensions as the specified value.
      */
     inline void *
-    alloc(const trace::Value *value, size_t size) {
+    allocArray(const trace::Value *value, size_t size) {
         const trace::Array *array = value->toArray();
         if (array) {
             return ::ScopedAllocator::alloc(array->size() * size);
@@ -73,6 +77,20 @@ public:
         }
         assert(0);
         return NULL;
+    }
+
+    /**
+     * XXX: We must not compute sizeof(T) inside the function body! d3d8.h and
+     * d3d9.h have declarations of D3DPRESENT_PARAMETERS and D3DVOLUME_DESC
+     * structures with different size sizes.  Multiple specializations of these
+     * will be produced (on debug builds, as on release builds the whole body
+     * is inlined.), and the linker will pick up one, leading to wrong results
+     * if the smallest specialization is picked.
+     */
+    template< class T >
+    inline T *
+    allocArray(const trace::Value *value, size_t sizeof_T = sizeof(T)) {
+        return static_cast<T *>(allocArray(value, sizeof_T));
     }
 
 };
@@ -107,6 +125,7 @@ extern bool profilingMemoryUsage;
  * State dumping.
  */
 extern bool dumpingState;
+extern bool dumpingSnapshots;
 
 
 enum Driver {
@@ -131,6 +150,11 @@ extern trace::DumpFlags dumpFlags;
 
 std::ostream &warning(trace::Call &call);
 
+#ifdef _WIN32
+void failed(trace::Call &call, HRESULT hr);
+#endif
+
+void checkMismatch(trace::Call &call, const char *expr, trace::Value *traceValue, long actualValue);
 
 void ignore(trace::Call &call);
 void unsupported(trace::Call &call);

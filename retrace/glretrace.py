@@ -27,18 +27,29 @@
 """GL retracer generator."""
 
 
+import re
+import sys
+
 from retrace import Retracer
 import specs.stdapi as stdapi
 import specs.glapi as glapi
-import specs.glesapi as glesapi
 
 
 class GlRetracer(Retracer):
 
     table_name = 'glretrace::gl_callbacks'
 
-    def retraceFunction(self, function):
-        Retracer.retraceFunction(self, function)
+    def retraceApi(self, api):
+        # Ensure pack function have side effects
+        abort = False
+        for function in api.getAllFunctions():
+            if not function.sideeffects and self.pack_function_regex.match(function.name):
+                sys.stderr.write('error: function %s must have sideeffects\n' % function.name)
+                abort = True
+        if abort:
+            sys.exit(1)
+
+        Retracer.retraceApi(self, api)
 
     array_pointer_function_names = set((
         "glVertexPointer",
@@ -72,128 +83,53 @@ class GlRetracer(Retracer):
         #"glMatrixIndexPointerARB",
     ))
 
-    draw_array_function_names = set([
-        "glDrawArrays",
-        "glDrawArraysEXT",
-        "glDrawArraysIndirect",
-        "glDrawArraysInstanced",
-        "glDrawArraysInstancedARB",
-        "glDrawArraysInstancedEXT",
-        "glDrawArraysInstancedBaseInstance",
-        "glDrawMeshArraysSUN",
-        "glMultiDrawArrays",
-        "glMultiDrawArraysEXT",
-        "glMultiModeDrawArraysIBM",
-        'glMultiDrawArraysIndirect',
-        'glMultiDrawArraysIndirectAMD',
-    ])
+    draw_arrays_function_regex = re.compile(r'^gl([A-Z][a-z]+)*Draw(Range)?Arrays([A-Z][a-zA-Z]*)?$' )
+    draw_elements_function_regex = re.compile(r'^gl([A-Z][a-z]+)*Draw(Range)?Elements([A-Z][a-zA-Z]*)?$' )
+    draw_indirect_function_regex = re.compile(r'^gl([A-Z][a-z]+)*Draw(Range)?(Arrays|Elements)Indirect([A-Z][a-zA-Z]*)?$' )
 
-    draw_elements_function_names = set([
-        "glDrawElements",
-        "glDrawElementsBaseVertex",
-        "glDrawElementsIndirect",
-        "glDrawElementsInstanced",
-        "glDrawElementsInstancedARB",
-        "glDrawElementsInstancedEXT",
-        "glDrawElementsInstancedBaseVertex",
-        "glDrawElementsInstancedBaseInstance",
-        "glDrawElementsInstancedBaseVertexBaseInstance",
-        "glDrawRangeElements",
-        "glDrawRangeElementsEXT",
-        "glDrawRangeElementsBaseVertex",
-        "glMultiDrawElements",
-        "glMultiDrawElementsBaseVertex",
-        "glMultiDrawElementsEXT",
-        "glMultiModeDrawElementsIBM",
-        'glMultiDrawElementsIndirect',
-        'glMultiDrawElementsIndirectAMD',
-    ])
+    misc_draw_function_regex = re.compile(r'^gl(' + r'|'.join([
+        r'CallList',
+        r'CallLists',
+        r'Clear',
+        r'End',
+        r'DrawPixels',
+        r'DrawTransformFeedback([A-Z][a-zA-Z]*)?',
+        r'BlitFramebuffer',
+        r'Rect[dfis]v?',
+        r'EvalMesh[0-9]+',
+    ]) + r')[0-9A-Z]*$')
 
-    draw_indirect_function_names = set([
-        "glDrawArraysIndirect",
-        "glDrawElementsIndirect",
-        'glMultiDrawArraysIndirect',
-        'glMultiDrawArraysIndirectAMD',
-        'glMultiDrawElementsIndirect',
-        'glMultiDrawElementsIndirectAMD',
-    ])
 
-    misc_draw_function_names = set([
-        "glCallList",
-        "glCallLists",
-        "glClear",
-        "glEnd",
-        "glDrawPixels",
-        "glBlitFramebuffer",
-        "glBlitFramebufferEXT",
-    ])
-
-    bind_framebuffer_function_names = set([
-        "glBindFramebuffer",
-        "glBindFramebufferEXT",
-        "glBindFramebufferOES",
-    ])
+    bind_framebuffer_function_regex = re.compile(r'^glBindFramebuffer[0-9A-Z]*$')
 
     # Names of the functions that can pack into the current pixel buffer
     # object.  See also the ARB_pixel_buffer_object specification.
-    pack_function_names = set([
-        'glGetCompressedTexImage',
-        'glGetCompressedTexImageARB',
-        'glGetCompressedTextureImageEXT',
-        'glGetCompressedMultiTexImageEXT',
-        'glGetConvolutionFilter',
-        'glGetHistogram',
-        'glGetMinmax',
-        'glGetPixelMapfv',
-        'glGetPixelMapuiv',
-        'glGetPixelMapusv',
-        'glGetPolygonStipple',
-        'glGetSeparableFilter',
-        'glGetTexImage',
-        'glGetTextureImageEXT',
-        'glGetMultiTexImageEXT',
-        'glReadPixels',
-        'glGetnCompressedTexImageARB',
-        'glGetnConvolutionFilterARB',
-        'glGetnHistogramARB',
-        'glGetnMinmaxARB',
-        'glGetnPixelMapfvARB',
-        'glGetnPixelMapuivARB',
-        'glGetnPixelMapusvARB',
-        'glGetnPolygonStippleARB',
-        'glGetnSeparableFilterARB',
-        'glGetnTexImageARB',
-        'glReadnPixelsARB',
-    ])
+    pack_function_regex = re.compile(r'^gl(' + r'|'.join([
+        r'Getn?Histogram',
+        r'Getn?PolygonStipple',
+        r'Getn?PixelMap[a-z]+v',
+        r'Getn?Minmax',
+        r'Getn?(Convolution|Separable)Filter',
+        r'Getn?(Compressed)?(Multi)?Tex(ture)?(Sub)?Image',
+        r'Readn?Pixels',
+    ]) + r')[0-9A-Z]*$')
 
-    map_function_names = set([
-        'glMapBuffer',
-        'glMapBufferARB',
-        'glMapBufferOES',
-        'glMapBufferRange',
-        'glMapNamedBufferEXT',
-        'glMapNamedBufferRangeEXT',
-        'glMapObjectBufferATI',
-    ])
+    map_function_regex = re.compile(r'^glMap(|Named|Object)Buffer(Range)?[0-9A-Z]*$')
 
-    unmap_function_names = set([
-        'glUnmapBuffer',
-        'glUnmapBufferARB',
-        'glUnmapBufferOES',
-        'glUnmapNamedBufferEXT',
-        'glUnmapObjectBufferATI',
-    ])
+    unmap_function_regex = re.compile(r'^glUnmap(|Named|Object)Buffer[0-9A-Z]*$')
 
     def retraceFunctionBody(self, function):
         is_array_pointer = function.name in self.array_pointer_function_names
-        is_draw_array = function.name in self.draw_array_function_names
-        is_draw_elements = function.name in self.draw_elements_function_names
-        is_misc_draw = function.name in self.misc_draw_function_names
+        is_draw_arrays = self.draw_arrays_function_regex.match(function.name) is not None
+        is_draw_elements = self.draw_elements_function_regex.match(function.name) is not None
+        is_draw_indirect = self.draw_indirect_function_regex.match(function.name) is not None
+        is_misc_draw = self.misc_draw_function_regex.match(function.name)
 
-        if is_array_pointer or is_draw_array or is_draw_elements:
+        # For backwards compatibility with old traces where non VBO drawing was supported
+        if (is_array_pointer or is_draw_arrays or is_draw_elements) and not is_draw_indirect:
             print '    if (retrace::parser.version < 1) {'
 
-            if is_array_pointer or is_draw_array:
+            if is_array_pointer or is_draw_arrays:
                 print '        GLint _array_buffer = 0;'
                 print '        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &_array_buffer);'
                 print '        if (!_array_buffer) {'
@@ -210,7 +146,7 @@ class GlRetracer(Retracer):
             print '    }'
 
         # When no pack buffer object is bound, the pack functions are no-ops.
-        if function.name in self.pack_function_names:
+        if self.pack_function_regex.match(function.name):
             print '    GLint _pack_buffer = 0;'
             print '    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &_pack_buffer);'
             print '    if (!_pack_buffer) {'
@@ -218,7 +154,7 @@ class GlRetracer(Retracer):
             print '    }'
 
         # Pre-snapshots
-        if function.name in self.bind_framebuffer_function_names:
+        if self.bind_framebuffer_function_regex.match(function.name):
             print '    assert(call.flags & trace::CALL_FLAG_SWAP_RENDERTARGET);'
         if function.name == 'glStringMarkerGREMEDY':
             return
@@ -233,7 +169,7 @@ class GlRetracer(Retracer):
             print '    if (!retrace::doubleBuffer) {'
             print '        glretrace::frame_complete(call);'
             print '    }'
-        if is_draw_array or is_draw_elements or is_misc_draw:
+        if is_draw_arrays or is_draw_elements or is_misc_draw:
             print '    assert(call.flags & trace::CALL_FLAG_RENDER);'
 
 
@@ -278,7 +214,7 @@ class GlRetracer(Retracer):
             print '    if (cap == GL_DEBUG_OUTPUT_SYNCHRONOUS_ARB) return;'
 
         # Destroy the buffer mapping
-        if function.name in self.unmap_function_names:
+        if self.unmap_function_regex.match(function.name):
             print r'        GLvoid *ptr = NULL;'
             if function.name == 'glUnmapBuffer':
                 print r'            glGetBufferPointerv(target, GL_BUFFER_MAP_POINTER, &ptr);'
@@ -286,6 +222,10 @@ class GlRetracer(Retracer):
                 print r'            glGetBufferPointervARB(target, GL_BUFFER_MAP_POINTER_ARB, &ptr);'
             elif function.name == 'glUnmapBufferOES':
                 print r'            glGetBufferPointervOES(target, GL_BUFFER_MAP_POINTER_OES, &ptr);'
+            elif function.name == 'glUnmapNamedBuffer':
+                print r'            glGetNamedBufferPointerv(buffer, GL_BUFFER_MAP_POINTER, &ptr);'
+            elif function.name == 'glUnmapNamedBuffer':
+                print r'            glGetNamedBufferPointerv(buffer, GL_BUFFER_MAP_POINTER, &ptr);'
             elif function.name == 'glUnmapNamedBufferEXT':
                 print r'            glGetNamedBufferPointervEXT(buffer, GL_BUFFER_MAP_POINTER, &ptr);'
             elif function.name == 'glUnmapObjectBufferATI':
@@ -296,7 +236,7 @@ class GlRetracer(Retracer):
             print r'        if (ptr) {'
             print r'            retrace::delRegionByPointer(ptr);'
             print r'        } else {'
-            print r'            retrace::warning(call) << "no current context\n";'
+            print r'            retrace::warning(call) << "failed to get mapped pointer\n";'
             print r'        }'
 
         if function.name in ('glBindProgramPipeline', 'glBindProgramPipelineEXT'):
@@ -306,13 +246,13 @@ class GlRetracer(Retracer):
             print r'    }'
 
         profileDraw = (
-            function.name in self.draw_array_function_names or
-            function.name in self.draw_elements_function_names or
-            function.name in self.draw_indirect_function_names or
-            function.name in self.misc_draw_function_names or
+            self.draw_arrays_function_regex.match(function.name) or
+            self.draw_elements_function_regex.match(function.name) or
+            self.misc_draw_function_regex.match(function.name) or
             function.name == 'glBegin'
         )
 
+        # Keep track of active program for call lists
         if function.name in ('glUseProgram', 'glUseProgramObjectARB'):
             print r'    glretrace::Context *currentContext = glretrace::getCurrentContext();'
             print r'    if (currentContext) {'
@@ -334,33 +274,55 @@ class GlRetracer(Retracer):
                 print r'        glretrace::beginProfile(call, false);'
             print r'    }'
 
-        if function.name == 'glCreateShaderProgramv':
-            # When dumping state, break down glCreateShaderProgramv so that the
+        if function.name in ('glCreateShaderProgramv', 'glCreateShaderProgramEXT', 'glCreateShaderProgramvEXT'):
+            # When dumping state, break down glCreateShaderProgram* so that the
             # shader source can be recovered.
             print r'    if (retrace::dumpingState) {'
             print r'        GLuint _shader = glCreateShader(type);'
             print r'        if (_shader) {'
+            if not function.name.startswith('glCreateShaderProgramv'):
+                print r'            GLsizei count = 1;'
+                print r'            const GLchar **strings = &string;'
             print r'            glShaderSource(_shader, count, strings, NULL);'
             print r'            glCompileShader(_shader);'
             print r'            const GLuint _program = glCreateProgram();'
             print r'            if (_program) {'
             print r'                GLint compiled = GL_FALSE;'
             print r'                glGetShaderiv(_shader, GL_COMPILE_STATUS, &compiled);'
-            print r'                glProgramParameteri(_program, GL_PROGRAM_SEPARABLE, GL_TRUE);'
+            if function.name == 'glCreateShaderProgramvEXT':
+                print r'                glProgramParameteriEXT(_program, GL_PROGRAM_SEPARABLE, GL_TRUE);'
+            else:
+                print r'                glProgramParameteri(_program, GL_PROGRAM_SEPARABLE, GL_TRUE);'
             print r'                if (compiled) {'
             print r'                    glAttachShader(_program, _shader);'
             print r'                    glLinkProgram(_program);'
-            print r'                    //glDetachShader(_program, _shader);'
+            print r'                    if (false) glDetachShader(_program, _shader);'
             print r'                }'
-            print r'                //append-shader-info-log-to-program-info-log'
+            print r'                // TODO: append shader info log to program info log'
             print r'            }'
-            print r'            //glDeleteShader(_shader);'
+            print r'            glDeleteShader(_shader);'
             print r'            _result = _program;'
             print r'        } else {'
             print r'            _result = 0;'
             print r'        }'
             print r'    } else {'
             Retracer.invokeFunction(self, function)
+            print r'    }'
+        elif function.name in ('glDetachShader', 'glDetachObjectARB'):
+            print r'    if (!retrace::dumpingState) {'
+            Retracer.invokeFunction(self, function)
+            print r'    }'
+        elif function.name == 'glClientWaitSync':
+            print r'    _result = glretrace::clientWaitSync(call, sync, flags, timeout);'
+            print r'    (void)_result;'
+        elif function.name == 'glGetSynciv':
+            print r'    if (pname == GL_SYNC_STATUS &&'
+            print r'        bufSize >= 1 &&'
+            print r'        values != NULL &&'
+            print r'        call.arg(4)[0].toSInt() == GL_SIGNALED) {'
+            print r'        // Fence was signalled, so ensure it happened here'
+            print r'        glretrace::blockOnFence(call, sync, GL_SYNC_FLUSH_COMMANDS_BIT);'
+            print r'        (void)length;'
             print r'    }'
         else:
             Retracer.invokeFunction(self, function)
@@ -380,7 +342,7 @@ class GlRetracer(Retracer):
             # glGetError is not allowed inside glBegin/glEnd
             print '    if (retrace::debug && !glretrace::insideGlBeginEnd && glretrace::getCurrentContext()) {'
             print '        glretrace::checkGlError(call);'
-            if function.name in ('glProgramStringARB', 'glProgramStringNV'):
+            if function.name in ('glProgramStringARB', 'glLoadProgramNV'):
                 print r'        GLint error_position = -1;'
                 print r'        glGetIntegerv(GL_PROGRAM_ERROR_POSITION_ARB, &error_position);'
                 print r'        if (error_position != -1) {'
@@ -398,8 +360,8 @@ class GlRetracer(Retracer):
                 print r'             retrace::warning(call) << infoLog << "\n";'
                 print r'             delete [] infoLog;'
                 print r'        }'
-            if function.name in ('glLinkProgram', 'glCreateShaderProgramv', 'glCreateShaderProgramEXT'):
-                if function.name != 'glLinkProgram':
+            if function.name in ('glLinkProgram', 'glCreateShaderProgramv', 'glCreateShaderProgramEXT', 'glCreateShaderProgramvEXT', 'glProgramBinary', 'glProgramBinaryOES'):
+                if function.name.startswith('glCreateShaderProgram'):
                     print r'        GLuint program = _result;'
                 print r'        GLint link_status = 0;'
                 print r'        glGetProgramiv(program, GL_LINK_STATUS, &link_status);'
@@ -433,11 +395,11 @@ class GlRetracer(Retracer):
                 print r'             retrace::warning(call) << infoLog << "\n";'
                 print r'             delete [] infoLog;'
                 print r'        }'
-            if function.name in self.map_function_names:
+            if self.map_function_regex.match(function.name):
                 print r'        if (!_result) {'
                 print r'             retrace::warning(call) << "failed to map buffer\n";'
                 print r'        }'
-            if function.name in self.unmap_function_names and function.type is not stdapi.Void:
+            if self.unmap_function_regex.match(function.name) and function.type is not stdapi.Void:
                 print r'        if (!_result) {'
                 print r'             retrace::warning(call) << "failed to unmap buffer\n";'
                 print r'        }'
@@ -446,7 +408,7 @@ class GlRetracer(Retracer):
                 print r'    if (_result != _origResult) {'
                 print r'        retrace::warning(call) << "vertex attrib location mismatch " << _origResult << " -> " << _result << "\n";'
                 print r'    }'
-            if function.name in ('glCheckFramebufferStatus', 'glCheckFramebufferStatusEXT', 'glCheckNamedFramebufferStatusEXT'):
+            if function.name in ('glCheckFramebufferStatus', 'glCheckFramebufferStatusEXT', 'glCheckNamedFramebufferStatus', 'glCheckNamedFramebufferStatusEXT'):
                 print r'    GLint _origResult = call.ret->toSInt();'
                 print r'    if (_origResult == GL_FRAMEBUFFER_COMPLETE &&'
                 print r'        _result != GL_FRAMEBUFFER_COMPLETE) {'
@@ -455,7 +417,7 @@ class GlRetracer(Retracer):
             print '    }'
 
         # Query the buffer length for whole buffer mappings
-        if function.name in self.map_function_names:
+        if self.map_function_regex.match(function.name):
             if 'length' in function.argNames():
                 assert 'BufferRange' in function.name
             else:
@@ -465,6 +427,8 @@ class GlRetracer(Retracer):
                     print r'    glGetBufferParameteriv(target, GL_BUFFER_SIZE, &length);'
                 elif function.name == 'glMapBufferARB':
                     print r'    glGetBufferParameterivARB(target, GL_BUFFER_SIZE_ARB, &length);'
+                elif function.name == 'glMapNamedBuffer':
+                    print r'    glGetNamedBufferParameteriv(buffer, GL_BUFFER_SIZE, &length);'
                 elif function.name == 'glMapNamedBufferEXT':
                     print r'    glGetNamedBufferParameterivEXT(buffer, GL_BUFFER_SIZE, &length);'
                 elif function.name == 'glMapObjectBufferATI':
@@ -477,38 +441,23 @@ class GlRetracer(Retracer):
             print '    %s = static_cast<%s>(retrace::toPointer(%s, true));' % (lvalue, arg_type, rvalue)
             return
 
-        if function.name in self.draw_elements_function_names and arg.name == 'indices' or\
-           function.name in self.draw_indirect_function_names and arg.name == 'indirect':
+        if self.draw_elements_function_regex.match(function.name) and arg.name == 'indices' or\
+           self.draw_indirect_function_regex.match(function.name) and arg.name == 'indirect':
             self.extractOpaqueArg(function, arg, arg_type, lvalue, rvalue)
             return
 
         # Handle pointer with offsets into the current pack pixel buffer
         # object.
-        if function.name in self.pack_function_names and arg.output:
+        if self.pack_function_regex.match(function.name) and arg.output:
             assert isinstance(arg_type, (stdapi.Pointer, stdapi.Array, stdapi.Blob, stdapi.Opaque))
             print '    %s = static_cast<%s>((%s).toPointer());' % (lvalue, arg_type, rvalue)
             return
 
-        if arg.type is glapi.GLlocation \
+        if (arg.type.depends(glapi.GLlocation) or \
+            arg.type.depends(glapi.GLsubroutine)) \
            and 'program' not in function.argNames():
             # Determine the active program for uniforms swizzling
-            print '    GLint program = -1;'
-            print '    if (glretrace::insideList) {'
-            print '        // glUseProgram & glUseProgramObjectARB are display-list-able'
-            print r'    glretrace::Context *currentContext = glretrace::getCurrentContext();'
-            print '        program = _program_map[currentContext->activeProgram];'
-            print '    } else {'
-            print '        GLint pipeline = 0;'
-            print '        if (_pipelineHasBeenBound) {'
-            print '            glGetIntegerv(GL_PROGRAM_PIPELINE_BINDING, &pipeline);'
-            print '        }'
-            print '        if (pipeline) {'
-            print '            glGetProgramPipelineiv(pipeline, GL_ACTIVE_PROGRAM, &program);'
-            print '        } else {'
-            print '            glGetIntegerv(GL_CURRENT_PROGRAM, &program);'
-            print '        }'
-            print '    }'
-            print
+            print '    GLint program = _getActiveProgram();'
 
         if arg.type is glapi.GLlocationARB \
            and 'programObj' not in function.argNames():
@@ -542,9 +491,38 @@ if __name__ == '__main__':
 
 
 static bool _pipelineHasBeenBound = false;
+
+
+static GLint
+_getActiveProgram(void);
+
 '''
     api = stdapi.API()
     api.addModule(glapi.glapi)
-    api.addModule(glesapi.glesapi)
     retracer = GlRetracer()
     retracer.retraceApi(api)
+
+    print r'''
+static GLint
+_getActiveProgram(void)
+{
+    GLint program = -1;
+    if (glretrace::insideList) {
+        // glUseProgram & glUseProgramObjectARB are display-list-able
+        glretrace::Context *currentContext = glretrace::getCurrentContext();
+        program = _program_map[currentContext->activeProgram];
+    } else {
+        GLint pipeline = 0;
+        if (_pipelineHasBeenBound) {
+            glGetIntegerv(GL_PROGRAM_PIPELINE_BINDING, &pipeline);
+        }
+        if (pipeline) {
+            glGetProgramPipelineiv(pipeline, GL_ACTIVE_PROGRAM, &program);
+        } else {
+            glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+        }
+    }
+    return program;
+}
+
+'''

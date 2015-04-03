@@ -123,7 +123,7 @@ public:
     virtual const Struct *toStruct(void) const { return NULL; }
     virtual Struct *toStruct(void) { return NULL; }
 
-    const Value & operator[](size_t index) const;
+    Value & operator[](size_t index) const;
 };
 
 
@@ -237,6 +237,19 @@ public:
     void visit(Visitor &visitor);
 
     const char * value;
+};
+
+
+class WString : public Value
+{
+public:
+    WString(const wchar_t * _value) : value(_value) {}
+    ~WString();
+
+    bool toBool(void) const;
+    void visit(Visitor &visitor);
+
+    const wchar_t * value;
 };
 
 
@@ -424,6 +437,7 @@ public:
     virtual void visit(Float *);
     virtual void visit(Double *);
     virtual void visit(String *);
+    virtual void visit(WString *);
     virtual void visit(Enum *);
     virtual void visit(Bitmask *);
     virtual void visit(Struct *);
@@ -431,8 +445,6 @@ public:
     virtual void visit(Blob *);
     virtual void visit(Pointer *);
     virtual void visit(Repr *);
-    virtual void visit(Backtrace *);
-    virtual void visit(StackFrame *);
 protected:
     inline void _visit(Value *value) {
         if (value) { 
@@ -554,14 +566,19 @@ public:
 
     ~Call();
 
-    inline const char * name(void) const {
+    inline const char *
+    name(void) const {
         return sig->name;
     }
 
-    inline Value & arg(unsigned index) {
+    inline Value &
+    arg(unsigned index) {
         assert(index < args.size());
         return *(args[index].value);
     }
+
+    Value &
+    argByName(const char *argName);
 };
 
 

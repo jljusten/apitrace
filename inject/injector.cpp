@@ -41,11 +41,36 @@
  */
 
 #include <string>
+#include <stdio.h>
+#include <assert.h>
 
 #include <windows.h>
-#include <stdio.h>
+#include <psapi.h>
+#include <dwmapi.h>
+#include <tlhelp32.h>
 
+#ifndef ERROR_ELEVATION_REQUIRED
+#define ERROR_ELEVATION_REQUIRED 740
+#endif
+
+#include "os_version.hpp"
+#include "devcon.hpp"
 #include "inject.h"
+
+
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(x) (sizeof(x)/sizeof((x)[0]))
+#endif
+
+
+static void
+debugPrintf(const char *format, ...)
+{
+    va_list ap;
+    va_start(ap, format);
+    vfprintf(stderr, format, ap);
+    va_end(ap);
+}
 
 
 /**
@@ -106,28 +131,218 @@ quoteArg(std::string &s, const char *arg)
 }
 
 
+// http://msdn.microsoft.com/en-gb/library/windows/desktop/ms686335.aspx
+static void
+restartService(const char *lpServiceName)
+{
+    SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    assert(hSCManager);
+    if (!hSCManager) {
+        return;
+    }
+
+    SC_HANDLE hService = OpenServiceA(hSCManager, lpServiceName, SC_MANAGER_ALL_ACCESS);
+    assert(hService);
+    if (!hService) {
+        return;
+    }
+
+    SERVICE_STATUS_PROCESS ssp;
+    DWORD cbBytesNeeded;
+    QueryServiceStatusEx(hService, SC_STATUS_PROCESS_INFO, (LPBYTE) &ssp, sizeof ssp, &cbBytesNeeded);
+
+    BOOL bRet;
+    if (ssp.dwCurrentState == SERVICE_RUNNING) {
+        bRet = ControlService(hService, SERVICE_CONTROL_STOP, (LPSERVICE_STATUS) &ssp);
+        assert(bRet);
+        while (ssp.dwCurrentState != SERVICE_STOPPED) {
+            Sleep(ssp.dwWaitHint);
+            QueryServiceStatusEx(hService, SC_STATUS_PROCESS_INFO, (LPBYTE) &ssp, sizeof ssp, &cbBytesNeeded);
+        }
+        bRet = StartService(hService, 0, NULL);
+        assert(bRet);
+    }
+
+    CloseServiceHandle(hService);
+    CloseServiceHandle(hSCManager);
+}
+
+
+// Force DWM process to recreate all its Direct3D objects.
+static void
+restartDwmComposition(HANDLE hProcess)
+{
+    HRESULT hr;
+
+    HMODULE hModule = LoadLibraryA("dwmapi");
+    assert(hModule);
+    if (!hModule) {
+        return;
+    }
+
+    typedef HRESULT (WINAPI *PFNDWMISCOMPOSITIONENABLED)(BOOL *pfEnabled);
+    PFNDWMISCOMPOSITIONENABLED pfnDwmIsCompositionEnabled = (PFNDWMISCOMPOSITIONENABLED)GetProcAddress(hModule, "DwmIsCompositionEnabled");
+    assert(pfnDwmIsCompositionEnabled);
+    if (!pfnDwmIsCompositionEnabled) {
+        return;
+    }
+
+    typedef HRESULT (WINAPI *PFNDWMENABLECOMPOSITION)(UINT uCompositionAction);
+    PFNDWMENABLECOMPOSITION pfnDwmEnableComposition = (PFNDWMENABLECOMPOSITION)GetProcAddress(hModule, "DwmEnableComposition");
+    assert(pfnDwmEnableComposition);
+    if (!pfnDwmEnableComposition) {
+        return;
+    }
+
+
+    BOOL bIsWindows8OrGreater = IsWindows8OrGreater();
+    if (bIsWindows8OrGreater) {
+        // Windows 8 ignores DwmEnableComposition(DWM_EC_DISABLECOMPOSITION).
+        // It is however possible to force DWM to restart by restarting the
+        // display device via the devcon utility 
+        devconEnable(DEVCON_CLASS_DISPLAY);
+    } else {
+
+        BOOL fEnabled = FALSE;
+        hr = pfnDwmIsCompositionEnabled(&fEnabled);
+        if (FAILED(hr) || !fEnabled) {
+            return;
+        }
+
+        fprintf(stderr, "info: restarting DWM composition\n");
+
+        hr = pfnDwmEnableComposition(DWM_EC_DISABLECOMPOSITION);
+        assert(SUCCEEDED(hr));
+        if (FAILED(hr)) {
+            return;
+        }
+
+        Sleep(1000/30);
+
+        hr = pfnDwmEnableComposition(DWM_EC_ENABLECOMPOSITION);
+        assert(SUCCEEDED(hr));
+        (void)hr;
+    }
+
+    fprintf(stderr, "Press any key when finished tracing\n");
+    getchar();
+
+    DWORD dwExitCode;
+    if (GetExitCodeProcess(hProcess, &dwExitCode) &&
+        dwExitCode != STILL_ACTIVE) {
+        // DWM process has already terminated
+        return;
+    }
+
+    fprintf(stderr, "info: restarting DWM process\n");
+    if (bIsWindows8OrGreater) {
+        // From Windows 8 onwards DWM no longer runs as a service.  We just
+        // kill it and winlogon parent process will respawn it.
+        if (!TerminateProcess(hProcess, 0)) {
+            logLastError("failed to terminate DWM process");
+        }
+    } else {
+        hr = pfnDwmEnableComposition(DWM_EC_DISABLECOMPOSITION);
+        assert(SUCCEEDED(hr));
+
+        restartService("uxsms");
+    }
+}
+
+
+BOOL
+getProcessIdByName(const char *szProcessName, DWORD *pdwProcessID)
+{
+    BOOL bRet = FALSE;
+
+    HANDLE hProcessSnap;
+    hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hProcessSnap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32 pe32;
+        pe32.dwSize = sizeof pe32;
+        if (Process32First(hProcessSnap, &pe32)) {
+            do {
+                if (stricmp(szProcessName, pe32.szExeFile) == 0) {
+                    *pdwProcessID = pe32.th32ProcessID;
+                    bRet = TRUE;
+                    break;
+                }
+            } while (Process32Next(hProcessSnap, &pe32));
+        }
+        CloseHandle(hProcessSnap);
+    }
+
+    return bRet;
+}
+
+
+static bool
+isNumber(const char *arg) {
+    while (*arg) {
+        if (!isdigit(*arg++)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
 int
 main(int argc, char *argv[])
 {
-
     if (argc < 3) {
-        fprintf(stderr, "inject dllname.dll command [args] ...\n");
+        fprintf(stderr,
+                "usage:\n"
+                "  inject <dllname.dll> <command> [args] ...\n"
+                "  inject <dllname.dll> <process-id>\n"
+                "  inject <dllname.dll> !<process-name>\n"
+        );
         return 1;
     }
 
-    const char *szDll = argv[1];
-#if !USE_SHARED_MEM
-    SetEnvironmentVariableA("INJECT_DLL", szDll);
-#else
-    SetSharedMem(szDll);
-#endif
+    BOOL bAttach = FALSE;
+    DWORD dwProcessId = ~0;
+    if (isNumber(argv[2])) {
+        dwProcessId = atol(argv[2]);
+        bAttach = TRUE;
+    } else if (argv[2][0] == '!') {
+        const char *szProcessName = &argv[2][1];
+        if (!getProcessIdByName(szProcessName, &dwProcessId)) {
+            fprintf(stderr, "error: failed to find process %s\n", szProcessName);
+            return 1;
+        }
+        bAttach = TRUE;
+        fprintf(stderr, "dwProcessId = %lu\n", dwProcessId);
+    }
 
+    HANDLE hSemaphore = NULL;
+    const char *szDll = argv[1];
+    if (!USE_SHARED_MEM) {
+        SetEnvironmentVariableA("INJECT_DLL", szDll);
+    } else {
+        hSemaphore = CreateSemaphore(NULL, 1, 1, "inject_semaphore");
+        if (hSemaphore == NULL) {
+            fprintf(stderr, "error: failed to create semaphore\n");
+            return 1;
+        }
+
+        DWORD dwWait = WaitForSingleObject(hSemaphore, 0);
+        if (dwWait == WAIT_TIMEOUT) {
+            fprintf(stderr, "info: waiting for another inject instance to finish\n");
+            dwWait = WaitForSingleObject(hSemaphore, INFINITE);
+        }
+        if (dwWait != WAIT_OBJECT_0) {
+            fprintf(stderr, "error: failed to enter semaphore gate\n");
+            return 1;
+        }
+
+        SetSharedMem(szDll);
+    }
+
+    BOOL bAttachDwm = FALSE;
     PROCESS_INFORMATION processInfo;
     HANDLE hProcess;
-    BOOL bAttach;
-    if (isdigit(argv[2][0])) {
-        bAttach = TRUE;
-
+    if (bAttach) {
         BOOL bRet;
         HANDLE hToken   = NULL;
         bRet = OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &hToken);
@@ -159,19 +374,25 @@ main(int argc, char *argv[])
             PROCESS_QUERY_LIMITED_INFORMATION |
             PROCESS_VM_OPERATION |
             PROCESS_VM_WRITE |
-            PROCESS_VM_READ;
-        DWORD dwProcessId = atol(argv[2]);
+            PROCESS_VM_READ |
+            PROCESS_TERMINATE;
         hProcess = OpenProcess(
             dwDesiredAccess,
             FALSE /* bInheritHandle */,
             dwProcessId);
         if (!hProcess) {
-            DWORD dwLastError = GetLastError();
-            fprintf(stderr, "error: failed to open process %lu (%lu)\n", dwProcessId, dwLastError);
+            logLastError("failed to open process");
             return 1;
         }
+
+        char szProcess[MAX_PATH];
+        DWORD dwRet = GetModuleFileNameEx(hProcess, 0, szProcess, sizeof szProcess);
+        assert(dwRet);
+        if (dwRet &&
+            stricmp(getBaseName(szProcess), "dwm.exe") == 0) {
+            bAttachDwm = TRUE;
+        }
     } else {
-        bAttach = FALSE;
         std::string commandLine;
         char sep = 0;
         for (int i = 2; i < argc; ++i) {
@@ -206,7 +427,12 @@ main(int argc, char *argv[])
                NULL, // current directory
                &startupInfo,
                &processInfo)) {
-            fprintf(stderr, "error: failed to execute %s\n", commandLine.c_str());
+            DWORD dwLastError = GetLastError();
+            fprintf(stderr, "error: failed to execute %s (%lu)\n",
+                    commandLine.c_str(), dwLastError);
+            if (dwLastError == ERROR_ELEVATION_REQUIRED) {
+                fprintf(stderr, "error: target program requires elevated priviledges and must be started from an Administrator Command Prompt, or UAC must be disabled\n");
+            }
             return 1;
         }
 
@@ -241,77 +467,59 @@ main(int argc, char *argv[])
         }
     }
 
+    if (bAttachDwm && IsWindows8OrGreater()) {
+        // Switch to Microsoft Basic Display Driver before injecting, so that
+        // we don't trace with it.
+        devconDisable(DEVCON_CLASS_DISPLAY);
+        Sleep(1000);
+    }
+
     const char *szDllName;
-    szDllName = "inject.dll";
+    szDllName = "injectee.dll";
 
     char szDllPath[MAX_PATH];
     GetModuleFileNameA(NULL, szDllPath, sizeof szDllPath);
     getDirName(szDllPath);
     strncat(szDllPath, szDllName, sizeof szDllPath - strlen(szDllPath) - 1);
 
-    size_t szDllPathLength = strlen(szDllPath) + 1;
-
-    // Allocate memory in the target process to hold the DLL name
-    void *lpMemory = VirtualAllocEx(hProcess, NULL, szDllPathLength, MEM_COMMIT, PAGE_READWRITE);
-    if (!lpMemory) {
-        fprintf(stderr, "error: failed to allocate memory in the process\n");
+#if 1
+    if (!injectDll(hProcess, szDllPath)) {
         TerminateProcess(hProcess, 1);
         return 1;
     }
+#endif
 
-    // Copy DLL name into the target process
-    if (!WriteProcessMemory(hProcess, lpMemory, szDllPath, szDllPathLength, NULL)) {
-        fprintf(stderr, "error: failed to write into process memory\n");
-        TerminateProcess(hProcess, 1);
-        return 1;
-    }
-
-    /*
-     * Get LoadLibraryA address from kernel32.dll.  It's the same for all the
-     * process (XXX: but only within the same architecture).
-     */
-    PTHREAD_START_ROUTINE lpStartAddress =
-        (PTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("KERNEL32"), "LoadLibraryA");
-
-    // Create remote thread in another process
-    HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, lpStartAddress, lpMemory, 0, NULL);
-    if (!hThread) {
-        fprintf(stderr, "error: failed to create remote thread\n");
-        TerminateProcess(hProcess, 1);
-        return 1;
-    }
-
-    // Wait for it to finish
-    WaitForSingleObject(hThread, INFINITE);
-
-    DWORD hModule = 0;
-    GetExitCodeThread(hThread, &hModule);
-    if (!hModule) {
-        fprintf(stderr, "error: failed to inject %s\n", szDllPath);
-        TerminateProcess(hProcess, 1);
-        return 1;
-    }
+    DWORD exitCode;
 
     if (bAttach) {
-        return 0;
+        if (bAttachDwm) {
+            restartDwmComposition(hProcess);
+        }
+
+        exitCode = 0;
+    } else {
+        // Start main process thread
+        ResumeThread(processInfo.hThread);
+
+        // Wait for it to finish
+        WaitForSingleObject(hProcess, INFINITE);
+
+        if (pSharedMem && !pSharedMem->bReplaced) {
+            fprintf(stderr, "warning: %s was never used: application probably does not use this API\n", szDll);
+        }
+
+        exitCode = ~0;
+        GetExitCodeProcess(hProcess, &exitCode);
+
+        CloseHandle(processInfo.hThread);
     }
-
-    // Start main process thread
-    ResumeThread(processInfo.hThread);
-
-    // Wait for it to finish
-    WaitForSingleObject(hProcess, INFINITE);
-
-    if (pSharedMem && !pSharedMem->bReplaced) {
-        fprintf(stderr, "warning: %s was never used: application probably does not use this API\n", szDll);
-    }
-
-    DWORD exitCode = ~0;
-    GetExitCodeProcess(hProcess, &exitCode);
 
     CloseHandle(hProcess);
-    CloseHandle(processInfo.hThread);
+
+    if (hSemaphore) {
+        ReleaseSemaphore(hSemaphore, 1, NULL);
+        CloseHandle(hSemaphore);
+    }
 
     return (int)exitCode;
-
 }

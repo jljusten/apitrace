@@ -36,7 +36,6 @@ from gltrace import GlTracer
 from specs.stdapi import Module, API
 from specs.glapi import glapi
 from specs.eglapi import eglapi
-from specs.glesapi import glesapi
 
 
 class EglTracer(GlTracer):
@@ -60,17 +59,22 @@ class EglTracer(GlTracer):
             print '    if (_result) {'
             print '        // update the profile'
             print '        if (ctx != EGL_NO_CONTEXT) {'
-            print '            EGLint api = EGL_OPENGL_ES_API, version = 1;'
             print '            gltrace::setContext((uintptr_t)ctx);'
+            print '#ifndef NDEBUG'
             print '            gltrace::Context *tr = gltrace::getContext();'
+            print '            EGLint api = EGL_OPENGL_ES_API;'
             print '            _eglQueryContext(dpy, ctx, EGL_CONTEXT_CLIENT_TYPE, &api);'
-            print '            _eglQueryContext(dpy, ctx, EGL_CONTEXT_CLIENT_VERSION, &version);'
-            print '            if (api == EGL_OPENGL_API)'
-            print '                tr->profile = gltrace::PROFILE_COMPAT;'
-            print '            else if (version == 1)'
-            print '                tr->profile = gltrace::PROFILE_ES1;'
-            print '            else'
-            print '                tr->profile = gltrace::PROFILE_ES2;'
+            print '            if (api == EGL_OPENGL_API) {'
+            print '                assert(tr->profile.api == glprofile::API_GL);'
+            print '            } else if (api == EGL_OPENGL_ES_API) {'
+            print '                assert(tr->profile.api == glprofile::API_GLES);'
+            print '                EGLint version = 1;'
+            print '                _eglQueryContext(dpy, ctx, EGL_CONTEXT_CLIENT_VERSION, &version);'
+            print '                assert(tr->profile.major >= version);'
+            print '            } else {'
+            print '                assert(0);'
+            print '            }'
+            print '#endif'
             print '        } else {'
             print '            gltrace::clearContext();'
             print '        }'
@@ -116,7 +120,6 @@ if __name__ == '__main__':
     module = Module()
     module.mergeModule(eglapi)
     module.mergeModule(glapi)
-    module.mergeModule(glesapi)
     api = API()
     api.addModule(module)
     tracer = EglTracer()
@@ -172,6 +175,14 @@ void * dlopen(const char *filename, int flag)
             handle = _dlopen(info.dli_fname, flag);
         } else {
             os::log("apitrace: warning: dladdr() failed\n");
+        }
+
+        // SDL will skip dlopen'ing libEGL.so after it spots EGL symbols on our
+        // wrapper, so force loading it here.
+        // (https://github.com/apitrace/apitrace/issues/291#issuecomment-59734022)
+        if (strcmp(filename, "libEGL.so") != 0 &&
+            strcmp(filename, "libEGL.so.1") != 0) {
+            _dlopen("libEGL.so.1", RTLD_GLOBAL | RTLD_LAZY);
         }
     }
 

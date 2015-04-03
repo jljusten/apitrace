@@ -109,13 +109,13 @@ Writer::_writeUInt(unsigned long long value) {
 
 void inline
 Writer::_writeFloat(float value) {
-    assert(sizeof value == 4);
+    static_assert(sizeof value == 4, "float is not 4 bytes");
     _write((const char *)&value, sizeof value);
 }
 
 void inline
 Writer::_writeDouble(double value) {
-    assert(sizeof value == 8);
+    static_assert(sizeof value == 8, "double is not 8 bytes");
     _write((const char *)&value, sizeof value);
 }
 
@@ -278,13 +278,37 @@ void Writer::writeString(const char *str, size_t len) {
     _write(str, len);
 }
 
+void Writer::writeWString(const wchar_t *str, size_t len) {
+    if (!str) {
+        Writer::writeNull();
+        return;
+    }
+    /* XXX: Encode wide-strings as ASCII for now, to avoid introducing a trace format version bump. */
+#if 0
+    _writeByte(trace::TYPE_WSTRING);
+    size_t len = wcslen(str);
+    _writeUInt(len);
+    for (size_t i = 0; i < len; ++i) {
+        _writeUInt(str[i]);
+    }
+#else
+    _writeByte(trace::TYPE_STRING);
+    _writeUInt(len);
+    for (size_t i = 0; i < len; ++i) {
+        wchar_t wc = str[i];
+        char c = wc >= 0 && wc < 0x80 ? (char)wc : '?';
+        _writeByte(c);
+    }
+#endif
+}
+
 void Writer::writeWString(const wchar_t *str) {
     if (!str) {
         Writer::writeNull();
         return;
     }
-    _writeByte(trace::TYPE_STRING);
-    _writeString("<wide-string>");
+    size_t len = wcslen(str);
+    writeWString(str, len);
 }
 
 void Writer::writeBlob(const void *data, size_t size) {

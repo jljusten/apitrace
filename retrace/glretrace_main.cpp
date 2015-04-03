@@ -28,12 +28,16 @@
 
 #include <string.h>
 
+#include <map>
+
 #include "retrace.hpp"
 #include "glproc.hpp"
 #include "glstate.hpp"
 #include "glretrace.hpp"
 #include "os_time.hpp"
 #include "os_memory.hpp"
+#include "highlight.hpp"
+
 
 /* Synchronous debug output may reduce performance however,
  * without it the callNo in the callback may be inaccurate
@@ -43,7 +47,7 @@
 
 namespace glretrace {
 
-glws::Profile defaultProfile = glws::PROFILE_COMPAT;
+glprofile::Profile defaultProfile(glprofile::API_GL, 1, 0);
 
 bool insideList = false;
 bool insideGlBeginEnd = false;
@@ -285,12 +289,84 @@ endProfile(trace::Call &call, bool isDraw) {
     }
 }
 
+
+GLenum
+blockOnFence(trace::Call &call, GLsync sync, GLbitfield flags) {
+    GLenum result;
+
+    do {
+        result = glClientWaitSync(sync, flags, 1000);
+    } while (result == GL_TIMEOUT_EXPIRED);
+
+    switch (result) {
+    case GL_ALREADY_SIGNALED:
+    case GL_CONDITION_SATISFIED:
+        break;
+    default:
+        retrace::warning(call) << "got " << glstate::enumToString(result) << "\n";
+    }
+
+    return result;
+}
+
+
+/**
+ * Helper for properly retrace glClientWaitSync().
+ */
+GLenum
+clientWaitSync(trace::Call &call, GLsync sync, GLbitfield flags, GLuint64 timeout) {
+    GLenum result = call.ret->toSInt();
+    switch (result) {
+    case GL_ALREADY_SIGNALED:
+    case GL_CONDITION_SATISFIED:
+        // We must block, as following calls might rely on the fence being
+        // signaled
+        result = blockOnFence(call, sync, flags);
+        break;
+    case GL_TIMEOUT_EXPIRED:
+        result = glClientWaitSync(sync, flags, timeout);
+        break;
+    case GL_WAIT_FAILED:
+        break;
+    default:
+        retrace::warning(call) << "unexpected return value\n";
+        break;
+    }
+    return result;
+}
+
+
+/*
+ * Called the first time a context is made current.
+ */
 void
 initContext() {
     glretrace::Context *currentContext = glretrace::getCurrentContext();
+    assert(currentContext);
+
+    /* Ensure we got a matching profile.
+     *
+     * In particular on MacOSX, there is no way to specify specific versions, so this is all we can do.
+     *
+     * Also, see if OpenGL ES can be handled through ARB_ES*_compatibility.
+     */
+    glprofile::Profile expectedProfile = currentContext->wsContext->profile;
+    glprofile::Profile currentProfile = glprofile::getCurrentContextProfile();
+    if (!currentProfile.matches(expectedProfile)) {
+        if (expectedProfile.api == glprofile::API_GLES &&
+            currentProfile.api == glprofile::API_GL &&
+            ((expectedProfile.major == 2 && currentContext->hasExtension("ARB_ES2_compatibility")) ||
+             (expectedProfile.major == 3 && currentContext->hasExtension("ARB_ES3_compatibility")))) {
+            std::cerr << "warning: context mismatch:"
+                      << " expected " << expectedProfile << ","
+                      << " but got " << currentProfile << " + ARB_ES" << expectedProfile.major << "_compatibility";
+        } else {
+            std::cerr << "error: context mismatch: expected " << expectedProfile << ", but got " << currentProfile << "\n";
+            exit(1);
+        }
+    }
 
     /* Ensure we have adequate extension support */
-    assert(currentContext);
     supportsTimestamp   = currentContext->hasExtension("GL_ARB_timer_query");
     supportsElapsed     = currentContext->hasExtension("GL_EXT_timer_query") || supportsTimestamp;
     supportsOcclusion   = currentContext->hasExtension("GL_ARB_occlusion_query");
@@ -366,99 +442,159 @@ frame_complete(trace::Call &call) {
         return;
     }
 
-    assert(currentContext->drawable);
-    if (retrace::debug && !currentContext->drawable->visible) {
+    glws::Drawable *currentDrawable = currentContext->drawable;
+    assert(currentDrawable);
+    if (retrace::debug &&
+        !currentDrawable->pbuffer &&
+        !currentDrawable->visible) {
         retrace::warning(call) << "could not infer drawable size (glViewport never called)\n";
     }
 }
 
-static const char*
-getDebugOutputSource(GLenum source) {
-    switch(source) {
-    case GL_DEBUG_SOURCE_API_ARB:
-        return "API";
-    case GL_DEBUG_SOURCE_WINDOW_SYSTEM_ARB:
-        return "Window System";
-    case GL_DEBUG_SOURCE_SHADER_COMPILER_ARB:
-        return "Shader Compiler";
-    case GL_DEBUG_SOURCE_THIRD_PARTY_ARB:
-        return "Third Party";
-    case GL_DEBUG_SOURCE_APPLICATION_ARB:
-        return "Application";
-    case GL_DEBUG_SOURCE_OTHER_ARB:
-    default:
-        return "";
-    }
-}
 
-static const char*
-getDebugOutputType(GLenum type) {
-    switch(type) {
-    case GL_DEBUG_TYPE_ERROR_ARB:
-        return "error";
-    case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR_ARB:
-        return "deprecated behaviour";
-    case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR_ARB:
-        return "undefined behaviour";
-    case GL_DEBUG_TYPE_PORTABILITY_ARB:
-        return "portability issue";
-    case GL_DEBUG_TYPE_PERFORMANCE_ARB:
-        return "performance issue";
-    case GL_DEBUG_TYPE_OTHER_ARB:
-        return "other issue";
-    default:
-        return "unknown issue";
-    }
-}
+// Limit messages
+// TODO: expose this via a command line option.
+static const unsigned
+maxMessageCount = 100;
 
-static const char*
-getDebugOutputSeverity(GLenum severity) {
-    switch(severity) {
-    case GL_DEBUG_SEVERITY_HIGH_ARB:
-        return "High";
-    case GL_DEBUG_SEVERITY_MEDIUM_ARB:
-        return "Medium";
-    case GL_DEBUG_SEVERITY_LOW_ARB:
-        return "Low";
-    default:
-        return "Unknown";
-    }
-}
+static std::map< uint64_t, unsigned > messageCounts;
 
-
-// Limit the low severity messages
-static long int maxLowSeverityMessages = 1000;
 
 static void APIENTRY
-debugOutputCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
+debugOutputCallback(GLenum source, GLenum type, GLuint id, GLenum severity,
+                    GLsizei length, const GLchar* message, const void *userParam)
+{
+    /* Ignore application messages while dumping state. */
+    if (retrace::dumpingState &&
+        source == GL_DEBUG_SOURCE_APPLICATION) {
+        return;
+    }
 
     /* Ignore NVIDIA's "Buffer detailed info:" messages, as they seem to be
      * purely informative, and high frequency. */
-    if (source == GL_DEBUG_SOURCE_API_ARB &&
-        type == GL_DEBUG_TYPE_OTHER_ARB &&
-        severity == GL_DEBUG_SEVERITY_LOW_ARB &&
+    if (source == GL_DEBUG_SOURCE_API &&
+        type == GL_DEBUG_TYPE_OTHER &&
+        severity == GL_DEBUG_SEVERITY_LOW &&
         id == 131185) {
         return;
     }
 
-    if (severity == GL_DEBUG_SEVERITY_LOW_ARB &&
-        --maxLowSeverityMessages <= 0) {
-        if (maxLowSeverityMessages == 0) {
-            std::cerr << retrace::callNo << ": ";
-            std::cerr << "glDebugOutputCallback: ";
-            std::cerr << "too many low severity messages";
-            std::cerr << std::endl;
-        }
+    // Keep track of identical messages; and ignore them after a while.
+    uint64_t messageHash =  (uint64_t)id
+                         + ((uint64_t)severity << 16)
+                         + ((uint64_t)type     << 32)
+                         + ((uint64_t)source   << 48);
+    size_t messageCount = messageCounts[messageHash]++;
+    if (messageCount > maxMessageCount) {
         return;
     }
 
-    std::cerr << retrace::callNo << ": ";
-    std::cerr << "glDebugOutputCallback: ";
-    std::cerr << getDebugOutputSeverity(severity) << " severity ";
-    std::cerr << getDebugOutputSource(source) << " " << getDebugOutputType(type);
-    std::cerr << " " << id;
-    std::cerr << ", " << message;
-    std::cerr << std::endl;
+    const highlight::Highlighter & highlighter = highlight::defaultHighlighter(std::cerr);
+
+    const char *severityStr = "";
+    const highlight::Attribute * color = &highlighter.normal();
+
+    switch (severity) {
+    case GL_DEBUG_SEVERITY_HIGH:
+        color = &highlighter.color(highlight::RED);
+        severityStr = " major";
+        break;
+    case GL_DEBUG_SEVERITY_MEDIUM:
+        break;
+    case GL_DEBUG_SEVERITY_LOW:
+        color = &highlighter.color(highlight::GRAY);
+        severityStr = " minor";
+        break;
+    case GL_DEBUG_SEVERITY_NOTIFICATION:
+        color = &highlighter.color(highlight::GRAY);
+        break;
+    default:
+        assert(0);
+    }
+
+    const char *sourceStr = "";
+    switch (source) {
+    case GL_DEBUG_SOURCE_API:
+        sourceStr = " api";
+        break;
+    case GL_DEBUG_SOURCE_WINDOW_SYSTEM:
+        sourceStr = " window system";
+        break;
+    case GL_DEBUG_SOURCE_SHADER_COMPILER:
+        sourceStr = " shader compiler";
+        break;
+    case GL_DEBUG_SOURCE_THIRD_PARTY:
+        sourceStr = " third party";
+        break;
+    case GL_DEBUG_SOURCE_APPLICATION:
+        sourceStr = " application";
+        break;
+    case GL_DEBUG_SOURCE_OTHER:
+        break;
+    default:
+        assert(0);
+    }
+
+    const char *typeStr = "";
+    switch (type) {
+    case GL_DEBUG_TYPE_ERROR:
+        typeStr = " error";
+        break;
+    case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+        typeStr = " deprecated behaviour";
+        break;
+    case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+        typeStr = " undefined behaviour";
+        break;
+    case GL_DEBUG_TYPE_PORTABILITY:
+        typeStr = " portability issue";
+        break;
+    case GL_DEBUG_TYPE_PERFORMANCE:
+        typeStr = " performance issue";
+        break;
+    default:
+        assert(0);
+        /* fall-through */
+    case GL_DEBUG_TYPE_OTHER:
+        typeStr = " issue";
+        break;
+    case GL_DEBUG_TYPE_MARKER:
+        typeStr = " marker";
+        break;
+    case GL_DEBUG_TYPE_PUSH_GROUP:
+        typeStr = " push group";
+        break;
+    case GL_DEBUG_TYPE_POP_GROUP:
+        typeStr = " pop group";
+        break;
+    }
+
+    std::cerr << *color << retrace::callNo << ": message:" << severityStr << sourceStr << typeStr;
+
+    if (id) {
+        std::cerr << " " << id;
+    }
+
+    std::cerr << ": ";
+
+    if (messageCount == maxMessageCount) {
+        std::cerr << "too many identical messages; ignoring"
+                  << highlighter.normal()
+                  << std::endl;
+        return;
+    }
+
+    std::cerr << message;
+
+    std::cerr << highlighter.normal();
+
+    // Write new line if not included in the message already.
+    size_t messageLen = strlen(message);
+    if (!messageLen ||
+        (message[messageLen - 1] != '\n' &&
+         message[messageLen - 1] != '\r')) {
+       std::cerr << std::endl;
+    }
 }
 
 } /* namespace glretrace */
@@ -481,7 +617,9 @@ public:
             !currentContext) {
             return false;
         }
+
         glstate::dumpCurrentContext(os);
+
         return true;
     }
 };
@@ -492,7 +630,7 @@ static GLDumper glDumper;
 void
 retrace::setFeatureLevel(const char *featureLevel)
 {
-    glretrace::defaultProfile = glws::PROFILE_3_2_CORE;
+    glretrace::defaultProfile = glprofile::Profile(glprofile::API_GL, 3, 2, true);
 }
 
 
