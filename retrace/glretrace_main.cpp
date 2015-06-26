@@ -355,11 +355,11 @@ initContext() {
     if (!currentProfile.matches(expectedProfile)) {
         if (expectedProfile.api == glprofile::API_GLES &&
             currentProfile.api == glprofile::API_GL &&
-            ((expectedProfile.major == 2 && currentContext->hasExtension("ARB_ES2_compatibility")) ||
-             (expectedProfile.major == 3 && currentContext->hasExtension("ARB_ES3_compatibility")))) {
+            ((expectedProfile.major == 2 && currentContext->hasExtension("GL_ARB_ES2_compatibility")) ||
+             (expectedProfile.major == 3 && currentContext->hasExtension("GL_ARB_ES3_compatibility")))) {
             std::cerr << "warning: context mismatch:"
                       << " expected " << expectedProfile << ","
-                      << " but got " << currentProfile << " + ARB_ES" << expectedProfile.major << "_compatibility";
+                      << " but got " << currentProfile << " with GL_ARB_ES" << expectedProfile.major << "_compatibility\n";
         } else {
             std::cerr << "error: context mismatch: expected " << expectedProfile << ", but got " << currentProfile << "\n";
             exit(1);
@@ -367,11 +367,18 @@ initContext() {
     }
 
     /* Ensure we have adequate extension support */
-    supportsTimestamp   = currentContext->hasExtension("GL_ARB_timer_query");
+    supportsTimestamp   = currentProfile.versionGreaterOrEqual(glprofile::API_GL, 3, 3) ||
+                          currentContext->hasExtension("GL_ARB_timer_query");
     supportsElapsed     = currentContext->hasExtension("GL_EXT_timer_query") || supportsTimestamp;
-    supportsOcclusion   = currentContext->hasExtension("GL_ARB_occlusion_query");
+    supportsOcclusion   = currentProfile.versionGreaterOrEqual(glprofile::API_GL, 1, 5);
     supportsDebugOutput = currentContext->hasExtension("GL_ARB_debug_output");
     supportsARBShaderObjects = currentContext->hasExtension("GL_ARB_shader_objects");
+
+#ifdef __APPLE__
+    // GL_TIMESTAMP doesn't work on Apple.  GL_TIME_ELAPSED still does however.
+    // http://lists.apple.com/archives/mac-opengl/2014/Nov/threads.html#00001
+    supportsTimestamp   = false;
+#endif
 
     /* Check for timer query support */
     if (retrace::profilingGpuTimes) {
@@ -611,16 +618,19 @@ public:
     }
 
     bool
-    dumpState(std::ostream &os) {
+    canDump(void) {
         glretrace::Context *currentContext = glretrace::getCurrentContext();
         if (glretrace::insideGlBeginEnd ||
             !currentContext) {
             return false;
         }
 
-        glstate::dumpCurrentContext(os);
-
         return true;
+    }
+
+    void
+    dumpState(StateWriter &writer) {
+        glstate::dumpCurrentContext(writer);
     }
 };
 

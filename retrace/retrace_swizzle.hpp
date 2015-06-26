@@ -23,8 +23,7 @@
  *
  **************************************************************************/
 
-#ifndef _RETRACE_SWIZZLE_HPP_
-#define _RETRACE_SWIZZLE_HPP_
+#pragma once
 
 
 #include <map>
@@ -99,7 +98,7 @@ public:
 
 
 void
-addRegion(unsigned long long address, void *buffer, unsigned long long size);
+addRegion(trace::Call &call, unsigned long long address, void *buffer, unsigned long long size);
 
 void
 delRegionByPointer(void *ptr);
@@ -129,5 +128,4 @@ asObjPointer(trace::Call &call, trace::Value &value) {
 
 } /* namespace retrace */
 
-#endif /* _RETRACE_SWIZZLE_HPP_ */
 

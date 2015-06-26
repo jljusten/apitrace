@@ -763,7 +763,7 @@ static void addSurfaceItem(const ApiSurface &surface,
     l->setWordWrap(true);
     tree->setItemWidget(item, 1, l);
 
-    item->setData(0, Qt::UserRole, surface.base64Data());
+    item->setData(0, Qt::UserRole, surface.data());
 }
 
 void MainWindow::fillStateForFrame()
@@ -918,8 +918,8 @@ void MainWindow::showSelectedSurface()
 
     viewer->setAttribute(Qt::WA_DeleteOnClose, true);
 
-    QByteArray base64Data = var.value<QByteArray>();
-    viewer->setBase64Data(base64Data);
+    QByteArray data = var.value<QByteArray>();
+    viewer->setData(data);
 
     viewer->show();
     viewer->raise();
@@ -1493,7 +1493,7 @@ void MainWindow::saveSelectedSurface()
 
     QImage img = var.value<QImage>();
     if (img.isNull()) {
-        image::Image *traceImage = ApiSurface::imageFromBase64(var.value<QByteArray>());
+        image::Image *traceImage = ApiSurface::imageFromData(var.value<QByteArray>());
         img = ApiSurface::qimageFromRawImage(traceImage);
         delete traceImage;
     }
@@ -1503,19 +1503,15 @@ void MainWindow::saveSelectedSurface()
     }
 
     QString imageIndex;
-    if (selectedCall()) {
+    ApiTraceCall *call = selectedCall();
+    if (call) {
         imageIndex = tr("_call_%1")
-                     .arg(selectedCall()->index());
-    } else if (selectedFrame()) {
-        ApiTraceCall *firstCall =
-            static_cast<ApiTraceCall *>(selectedFrame()->eventAtRow(0));
-        if (firstCall) {
+                     .arg(call->index());
+    } else {
+        ApiTraceFrame *frame = selectedFrame();
+        if (frame) {
             imageIndex = tr("_frame_%1")
-                         .arg(firstCall->index());
-        } else {
-            qDebug()<<"unknown frame number";
-            imageIndex = tr("_frame_%1")
-                         .arg(firstCall->index());
+                         .arg(frame->number);
         }
     }
 
@@ -1555,18 +1551,14 @@ void MainWindow::exportBufferData()
         return;
 
     QString bufferIndex;
-    if (selectedCall()) {
-        bufferIndex = tr("_call_%1").arg(selectedCall()->index());
-    } else if (selectedFrame()) {
-        ApiTraceCall *firstCall =
-            static_cast<ApiTraceCall *>(selectedFrame()->eventAtRow(0));
-        if (firstCall) {
+    ApiTraceCall *call = selectedCall();
+    if (call) {
+        bufferIndex = tr("_call_%1").arg(call->index());
+    } else {
+        ApiTraceFrame *frame = selectedFrame();
+        if (frame) {
             bufferIndex = tr("_frame_%1")
-                         .arg(firstCall->index());
-        } else {
-            qDebug()<<"unknown frame number";
-            bufferIndex = tr("_frame_%1")
-                         .arg(firstCall->index());
+                         .arg(frame->number);
         }
     }
 

@@ -1,3 +1,19 @@
+add_definitions (-DQT_FORCE_ASSERTS)
+
+if (APPLE)
+    # Recent builds of Qt no longer support i386 architecture
+    set (CMAKE_OSX_ARCHITECTURES "x86_64")
+endif()
+
+add_library (qubjson STATIC
+    qubjson.cpp
+)
+
+add_executable (qubjson_test qubjson_test.cpp)
+target_link_libraries (qubjson_test qubjson gtest)
+add_dependencies (check qubjson_test)
+add_test (NAME qubjson_test COMMAND $<TARGET_FILE:qubjson_test>)
+
 set(qapitrace_SRCS
    androiddevicedialog.cpp
    androidfiledialog.cpp
@@ -56,7 +72,10 @@ set(qapitrace_UIS
    ui/shaderssourcewidget.ui
    )
 
-set(CMAKE_AUTOMOC ON)
+set (CMAKE_AUTOMOC ON)
+# Silence `Note: No relevant classes found. No output generated.`
+set (CMAKE_AUTOMOC_MOC_OPTIONS "-nn")
+
 QT5_WRAP_UI(qapitrace_UIS_H ${qapitrace_UIS})
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -72,23 +91,23 @@ add_executable (qapitrace ${qapitrace_SRCS} ${qapitrace_UIS_H})
 # - http://doc.qt.io/qt-5/cmake-manual.html
 # - http://www.kdab.com/using-cmake-with-qt-5/
 if (Qt5Core_VERSION_STRING VERSION_LESS 5.2.0)
+    qt5_use_modules (qubjson Widgets)
+    qt5_use_modules (qubjson_test Widgets)
     qt5_use_modules (qapitrace Widgets WebKitWidgets)
 else ()
+    target_link_libraries (qubjson Qt5::Widgets)
+    target_link_libraries (qubjson_test Qt5::Widgets)
     target_link_libraries (qapitrace Qt5::Widgets Qt5::WebKitWidgets)
 endif ()
 
 target_link_libraries (qapitrace
+    qubjson
     image
     common
     ${ZLIB_LIBRARIES}
     ${SNAPPY_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
 )
-
-if (APPLE)
-    # Recent builds of Qt no longer support i386 architecture
-    set_target_properties (qapitrace PROPERTIES OSX_ARCHITECTURES x86_64)
-endif ()
 
 if (WIN32 AND NOT (CMAKE_BUILD_TYPE STREQUAL "Debug"))
     # Use Windows subsystem (i.e., no console).

@@ -165,6 +165,10 @@ macro (add_linker_flags)
     set (CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} ${_FLAGS}")
 endmacro ()
 
+add_definitions (
+    -D__STDC_LIMIT_MACROS
+)
+
 if (WIN32)
     # http://msdn.microsoft.com/en-us/library/aa383745.aspx
     if (MINGW OR CMAKE_GENERATOR_TOOLSET MATCHES "_xp$")
@@ -306,6 +310,16 @@ else ()
     add_compiler_flags (-fmessage-length=0)
 endif ()
 
+if (CMAKE_CXX_COMPILER_ID STREQUAL Clang AND CMAKE_BUILD_TYPE MATCHES Rel)
+    message (WARNING
+        "\n"
+        "  WARNING: NON-DEBUG BUILDS ON CLANG CAN TAKE UP TO 45MIN!\n"
+        "  See https://github.com/apitrace/apitrace/issues/346\n"
+        ""
+    )
+    execute_process (COMMAND ${CMAKE_COMMAND} -E sleep 5)
+endif ()
+
 if (MINGW)
     # Avoid depending on MinGW runtime DLLs
     add_linker_flags (-static-libgcc -static-libstdc++)
@@ -332,6 +346,12 @@ endif ()
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # For RTLD_DEFAULT and RTLD_NEXT
     add_definitions (-D_GNU_SOURCE)
+endif ()
+
+include (TestBigEndian)
+test_big_endian (HAVE_BIGENDIAN)
+if (HAVE_BIGENDIAN)
+    add_definitions (-DHAVE_BIGENDIAN)
 endif ()
 
 # Put all executables into the same top level build directory, regardless of
@@ -430,7 +450,7 @@ endif ()
 if (CMAKE_EXECUTABLE_FORMAT STREQUAL "ELF")
     add_subdirectory (thirdparty/libbacktrace)
     include_directories (${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/libbacktrace)
-    set (LIBBACKTRACE_LIBRARIES dl backtrace)
+    set (LIBBACKTRACE_LIBRARIES ${CMAKE_DL_LIBS} backtrace)
     add_definitions (-DHAVE_BACKTRACE=1)
 endif ()
 
@@ -443,6 +463,15 @@ set (MD5_LIBRARIES md5_bundled)
 # are so intertwined that conditional compilation extremely difficult. This
 # also avoids missing/inconsistent declarations in system headers.
 include_directories (BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/khronos)
+
+# We use non-standard C++ flags, so we can't just use GTest's CMakeLists.txt
+include_directories (${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/gtest/include)
+add_library (gtest ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/gtest/src/gtest-all.cc)
+set_property (TARGET gtest APPEND PROPERTY INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/gtest)
+target_link_libraries (gtest ${CMAKE_THREAD_LIBS_INIT})
+
+enable_testing ()
+add_custom_target (check COMMAND ${CMAKE_CTEST_COMMAND})
 
 
 ##############################################################################

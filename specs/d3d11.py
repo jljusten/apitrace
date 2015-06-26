@@ -1277,7 +1277,7 @@ D3D11_CREATE_DEVICE_FLAG = Flags(UINT, [
 ])
 
 ID3D11Device.methods += [
-    StdMethod(HRESULT, "CreateBuffer", [(Pointer(Const(D3D11_BUFFER_DESC)), "pDesc"), (Array(Const(D3D11_SUBRESOURCE_DATA), "1"), "pInitialData"), Out(Pointer(ObjPointer(ID3D11Buffer)), "ppBuffer")]),
+    StdMethod(HRESULT, "CreateBuffer", [(Pointer(Const(D3D11_BUFFER_DESC)), "pDesc"), (Array(Const(D3D11_SUBRESOURCE_DATA), 1), "pInitialData"), Out(Pointer(ObjPointer(ID3D11Buffer)), "ppBuffer")]),
     StdMethod(HRESULT, "CreateTexture1D", [(Pointer(Const(D3D11_TEXTURE1D_DESC)), "pDesc"), (Array(Const(D3D11_SUBRESOURCE_DATA), "_getNumSubResources(pDesc)"), "pInitialData"), Out(Pointer(ObjPointer(ID3D11Texture1D)), "ppTexture1D")]),
     StdMethod(HRESULT, "CreateTexture2D", [(Pointer(Const(D3D11_TEXTURE2D_DESC)), "pDesc"), (Array(Const(D3D11_SUBRESOURCE_DATA), "_getNumSubResources(pDesc)"), "pInitialData"), Out(Pointer(ObjPointer(ID3D11Texture2D)), "ppTexture2D")]),
     StdMethod(HRESULT, "CreateTexture3D", [(Pointer(Const(D3D11_TEXTURE3D_DESC)), "pDesc"), (Array(Const(D3D11_SUBRESOURCE_DATA), "_getNumSubResources(pDesc)"), "pInitialData"), Out(Pointer(ObjPointer(ID3D11Texture3D)), "ppTexture3D")]),
@@ -1394,10 +1394,12 @@ D3D11_RENDER_TARGET_BLEND_DESC1 = Struct("D3D11_RENDER_TARGET_BLEND_DESC1", [
     (UINT8, "RenderTargetWriteMask"),
 ])
 
+D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT = 8
+
 D3D11_BLEND_DESC1 = Struct("D3D11_BLEND_DESC1", [
     (BOOL, "AlphaToCoverageEnable"),
     (BOOL, "IndependentBlendEnable"),
-    (Array(D3D11_RENDER_TARGET_BLEND_DESC1, "D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT"), "RenderTarget"),
+    (Array(D3D11_RENDER_TARGET_BLEND_DESC1, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT), "RenderTarget"),
 ])
 
 ID3D11BlendState1.methods += [
@@ -1445,7 +1447,7 @@ ID3D11DeviceContext1.methods += [
     StdMethod(Void, "PSGetConstantBuffers1", [(UINT, "StartSlot"), (UINT, "NumBuffers"), Out(Array(ObjPointer(ID3D11Buffer), "NumBuffers"), "ppConstantBuffers"), Out(Array(UINT, "NumBuffers"), "pFirstConstant"), Out(Array(UINT, "NumBuffers"), "pNumConstants")]),
     StdMethod(Void, "CSGetConstantBuffers1", [(UINT, "StartSlot"), (UINT, "NumBuffers"), Out(Array(ObjPointer(ID3D11Buffer), "NumBuffers"), "ppConstantBuffers"), Out(Array(UINT, "NumBuffers"), "pFirstConstant"), Out(Array(UINT, "NumBuffers"), "pNumConstants")]),
     StdMethod(Void, "SwapDeviceContextState", [(ObjPointer(ID3DDeviceContextState), "pState"), Out(Pointer(ObjPointer(ID3DDeviceContextState)), "ppPreviousState")]),
-    StdMethod(Void, "ClearView", [(ObjPointer(ID3D11View), "pView"), (Array(Const(FLOAT), 4), "Color"), (Pointer(Const(D3D11_RECT)), "pRect"), (UINT, "NumRects")]),
+    StdMethod(Void, "ClearView", [(ObjPointer(ID3D11View), "pView"), (Array(Const(FLOAT), 4), "Color"), (Array(Const(D3D11_RECT), "NumRects"), "pRect"), (UINT, "NumRects")]),
 ]
 
 

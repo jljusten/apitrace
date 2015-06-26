@@ -245,10 +245,14 @@ class GlRetracer(Retracer):
             print r'        _pipelineHasBeenBound = true;'
             print r'    }'
 
+        is_draw_arrays = self.draw_arrays_function_regex.match(function.name) is not None
+        is_draw_elements = self.draw_elements_function_regex.match(function.name) is not None
+        is_misc_draw = self.misc_draw_function_regex.match(function.name) is not None
+
         profileDraw = (
-            self.draw_arrays_function_regex.match(function.name) or
-            self.draw_elements_function_regex.match(function.name) or
-            self.misc_draw_function_regex.match(function.name) or
+            is_draw_arrays or
+            is_draw_elements or
+            is_misc_draw or
             function.name == 'glBegin'
         )
 
@@ -265,6 +269,14 @@ class GlRetracer(Retracer):
 
         if function.name == 'glEndList':
             print r'    glretrace::insideList = false;'
+
+        if function.name == 'glBegin' or \
+           is_draw_arrays or \
+           is_draw_elements or \
+           function.name.startswith('glBeginTransformFeedback'):
+            print r'    if (retrace::debug && !glretrace::insideList && !glretrace::insideGlBeginEnd && glretrace::getCurrentContext()) {'
+            print r'        _validateActiveProgram(call);'
+            print r'    }'
 
         if function.name != 'glEnd':
             print r'    if (!glretrace::insideList && !glretrace::insideGlBeginEnd && retrace::profiling) {'
@@ -347,14 +359,17 @@ class GlRetracer(Retracer):
                 print r'        glGetIntegerv(GL_PROGRAM_ERROR_POSITION_ARB, &error_position);'
                 print r'        if (error_position != -1) {'
                 print r'            const char *error_string = (const char *)glGetString(GL_PROGRAM_ERROR_STRING_ARB);'
-                print r'            retrace::warning(call) << error_string << "\n";'
+                print r'            retrace::warning(call) << "error in position " << error_position << ": " << error_string << "\n";'
                 print r'        }'
             if function.name == 'glCompileShader':
                 print r'        GLint compile_status = 0;'
                 print r'        glGetShaderiv(shader, GL_COMPILE_STATUS, &compile_status);'
                 print r'        if (!compile_status) {'
-                print r'             GLint info_log_length = 0;'
-                print r'             glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &info_log_length);'
+                print r'             retrace::warning(call) << "compilation failed\n";'
+                print r'        }'
+                print r'        GLint info_log_length = 0;'
+                print r'        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &info_log_length);'
+                print r'        if (info_log_length > 1) {'
                 print r'             GLchar *infoLog = new GLchar[info_log_length];'
                 print r'             glGetShaderInfoLog(shader, info_log_length, NULL, infoLog);'
                 print r'             retrace::warning(call) << infoLog << "\n";'
@@ -366,8 +381,11 @@ class GlRetracer(Retracer):
                 print r'        GLint link_status = 0;'
                 print r'        glGetProgramiv(program, GL_LINK_STATUS, &link_status);'
                 print r'        if (!link_status) {'
-                print r'             GLint info_log_length = 0;'
-                print r'             glGetProgramiv(program, GL_INFO_LOG_LENGTH, &info_log_length);'
+                print r'             retrace::warning(call) << "link failed\n";'
+                print r'        }'
+                print r'        GLint info_log_length = 0;'
+                print r'        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &info_log_length);'
+                print r'        if (info_log_length > 1) {'
                 print r'             GLchar *infoLog = new GLchar[info_log_length];'
                 print r'             glGetProgramInfoLog(program, info_log_length, NULL, infoLog);'
                 print r'             retrace::warning(call) << infoLog << "\n";'
@@ -377,8 +395,11 @@ class GlRetracer(Retracer):
                 print r'        GLint compile_status = 0;'
                 print r'        glGetObjectParameterivARB(shaderObj, GL_OBJECT_COMPILE_STATUS_ARB, &compile_status);'
                 print r'        if (!compile_status) {'
-                print r'             GLint info_log_length = 0;'
-                print r'             glGetObjectParameterivARB(shaderObj, GL_OBJECT_INFO_LOG_LENGTH_ARB, &info_log_length);'
+                print r'             retrace::warning(call) << "compilation failed\n";'
+                print r'        }'
+                print r'        GLint info_log_length = 0;'
+                print r'        glGetObjectParameterivARB(shaderObj, GL_OBJECT_INFO_LOG_LENGTH_ARB, &info_log_length);'
+                print r'        if (info_log_length > 1) {'
                 print r'             GLchar *infoLog = new GLchar[info_log_length];'
                 print r'             glGetInfoLogARB(shaderObj, info_log_length, NULL, infoLog);'
                 print r'             retrace::warning(call) << infoLog << "\n";'
@@ -388,8 +409,11 @@ class GlRetracer(Retracer):
                 print r'        GLint link_status = 0;'
                 print r'        glGetObjectParameterivARB(programObj, GL_OBJECT_LINK_STATUS_ARB, &link_status);'
                 print r'        if (!link_status) {'
-                print r'             GLint info_log_length = 0;'
-                print r'             glGetObjectParameterivARB(programObj, GL_OBJECT_INFO_LOG_LENGTH_ARB, &info_log_length);'
+                print r'             retrace::warning(call) << "link failed\n";'
+                print r'        }'
+                print r'        GLint info_log_length = 0;'
+                print r'        glGetObjectParameterivARB(programObj, GL_OBJECT_INFO_LOG_LENGTH_ARB, &info_log_length);'
+                print r'        if (info_log_length > 1) {'
                 print r'             GLchar *infoLog = new GLchar[info_log_length];'
                 print r'             glGetInfoLogARB(programObj, info_log_length, NULL, infoLog);'
                 print r'             retrace::warning(call) << infoLog << "\n";'
@@ -467,12 +491,20 @@ class GlRetracer(Retracer):
 
         # Don't try to use more samples than the implementation supports
         if arg.name == 'samples':
-            assert arg.type is glapi.GLsizei
-            print '    GLint max_samples = 0;'
-            print '    glGetIntegerv(GL_MAX_SAMPLES, &max_samples);'
-            print '    if (samples > max_samples) {'
-            print '        samples = max_samples;'
-            print '    }'
+            if function.name == 'glRasterSamplesEXT':
+                assert arg.type is glapi.GLuint
+                print '    GLint max_samples = 0;'
+                print '    glGetIntegerv(GL_MAX_RASTER_SAMPLES_EXT, &max_samples);'
+                print '    if (samples > static_cast<GLuint>(max_samples)) {'
+                print '        samples = static_cast<GLuint>(max_samples);'
+                print '    }'
+            else:
+                assert arg.type is glapi.GLsizei
+                print '    GLint max_samples = 0;'
+                print '    glGetIntegerv(GL_MAX_SAMPLES, &max_samples);'
+                print '    if (samples > max_samples) {'
+                print '        samples = max_samples;'
+                print '    }'
 
         # These parameters are referred beyond the call life-time
         # TODO: Replace ad-hoc solution for bindable parameters with general one
@@ -495,6 +527,9 @@ static bool _pipelineHasBeenBound = false;
 
 static GLint
 _getActiveProgram(void);
+
+static void
+_validateActiveProgram(trace::Call &call);
 
 '''
     api = stdapi.API()
@@ -523,6 +558,48 @@ _getActiveProgram(void)
         }
     }
     return program;
+}
+
+static void
+_validateActiveProgram(trace::Call &call)
+{
+    assert(!glretrace::insideList);
+
+    GLint pipeline = 0;
+    if (_pipelineHasBeenBound) {
+        glGetIntegerv(GL_PROGRAM_PIPELINE_BINDING, &pipeline);
+    }
+    if (pipeline) {
+        // TODO
+    } else {
+        GLint program = 0;
+        glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+        if (!program) {
+            return;
+        }
+
+        GLint validate_status = GL_FALSE;
+        glGetProgramiv(program, GL_VALIDATE_STATUS, &validate_status);
+        if (validate_status) {
+            // Validate only once
+            return;
+        }
+
+        glValidateProgram(program);
+        glGetProgramiv(program, GL_VALIDATE_STATUS, &validate_status);
+        if (!validate_status) {
+            retrace::warning(call) << "program validation failed\n";
+        }
+
+        GLint info_log_length = 0;
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &info_log_length);
+        if (info_log_length > 1) {
+             GLchar *infoLog = new GLchar[info_log_length];
+             glGetProgramInfoLog(program, info_log_length, NULL, infoLog);
+             retrace::warning(call) << infoLog << "\n";
+             delete [] infoLog;
+        }
+    }
 }
 
 '''

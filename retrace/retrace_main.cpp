@@ -42,6 +42,7 @@
 #include "trace_dump.hpp"
 #include "trace_option.hpp"
 #include "retrace.hpp"
+#include "state_writer.hpp"
 
 
 static bool waitOnFinish = false;
@@ -72,6 +73,7 @@ trace::Profiler profiler;
 
 int verbosity = 0;
 unsigned debug = 1;
+bool forceWindowed = true;
 bool dumpingState = false;
 bool dumpingSnapshots = false;
 
@@ -110,9 +112,33 @@ frameComplete(trace::Call &call) {
 }
 
 
-static Dumper defaultDumper;
+class DefaultDumper: public Dumper
+{
+public:
+    image::Image *
+    getSnapshot(void) {
+        return NULL;
+    }
+
+    bool
+    canDump(void) {
+        return false;
+    }
+
+    void
+    dumpState(StateWriter &writer) {
+        assert(0);
+    }
+};
+
+
+static DefaultDumper defaultDumper;
 
 Dumper *dumper = &defaultDumper;
+
+
+typedef StateWriter *(*StateWriterFactory)(std::ostream &);
+static StateWriterFactory stateWriterFactory = createJSONStateWriter;
 
 
 /**
@@ -152,8 +178,6 @@ takeSnapshot(unsigned call_no) {
                 assert(0);
                 break;
             }
-        } else if (src->channelType != image::TYPE_UNORM8) {
-            std::cerr << call_no << ": warning: skipping non 8-bit unsigned normalized snapshot\n";
         } else {
             os::String filename = os::String::format("%s%010u.png",
                                                      snapshotPrefix,
@@ -218,7 +242,10 @@ retraceCall(trace::Call *call) {
     }
 
     if (call->no >= dumpStateCallNo &&
-        dumper->dumpState(std::cout)) {
+        dumper->canDump()) {
+        StateWriter *writer = stateWriterFactory(std::cout);
+        dumper->dumpState(*writer);
+        delete writer;
         exit(0);
     }
 }
@@ -605,6 +632,7 @@ usage(const char *argv0) {
         "      --db                use a double buffer visual (default)\n"
         "      --samples=N         use GL_ARB_multisample (default is 1)\n"
         "      --driver=DRIVER     force driver type (`hw`, `sw`, `ref`, `null`, or driver module name)\n"
+        "      --fullscreen        allow fullscreen\n"
         "      --sb                use a single buffer visual\n"
         "  -s, --snapshot-prefix=PREFIX    take snapshots; `-` for PNM stdout output\n"
         "      --snapshot-format=FMT       use (PNM, RGB, or MD5; default is PNM) when writing to stdout output\n"
@@ -612,6 +640,7 @@ usage(const char *argv0) {
         "      --snapshot-interval=N    specify a frame interval when generating snaphots (default is 0)\n"
         "  -v, --verbose           increase output verbosity\n"
         "  -D, --dump-state=CALL   dump state at specific call no\n"
+        "      --dump-format=FORMAT dump state format (`json` or `ubjson`)\n"
         "  -w, --wait              waitOnFinish on final frame\n"
         "      --loop[=N]          loop N times (N<0 continuously) replaying final frame.\n"
         "      --singlethread      use a single thread to replay command stream\n";
@@ -623,6 +652,7 @@ enum {
     DB_OPT,
     SAMPLES_OPT,
     DRIVER_OPT,
+    FULLSCREEN_OPT,
     PCPU_OPT,
     PGPU_OPT,
     PPD_OPT,
@@ -631,7 +661,8 @@ enum {
     SNAPSHOT_FORMAT_OPT,
     LOOP_OPT,
     SINGLETHREAD_OPT,
-    SNAPSHOT_INTERVAL_OPT
+    SNAPSHOT_INTERVAL_OPT,
+    DUMP_FORMAT_OPT,
 };
 
 const static char *
@@ -647,6 +678,8 @@ longOptions[] = {
     {"samples", required_argument, 0, SAMPLES_OPT},
     {"driver", required_argument, 0, DRIVER_OPT},
     {"dump-state", required_argument, 0, 'D'},
+    {"dump-format", required_argument, 0, DUMP_FORMAT_OPT},
+    {"fullscreen", no_argument, 0, FULLSCREEN_OPT},
     {"help", no_argument, 0, 'h'},
     {"pcpu", no_argument, 0, PCPU_OPT},
     {"pgpu", no_argument, 0, PGPU_OPT},
@@ -700,6 +733,17 @@ int main(int argc, char **argv)
             dumpingState = true;
             retrace::verbosity = -2;
             break;
+        case DUMP_FORMAT_OPT:
+            if (strcasecmp(optarg, "json") == 0) {
+                stateWriterFactory = &createJSONStateWriter;
+            } else if (strcasecmp(optarg, "ubjson") == 0) {
+                os::setBinaryMode(stdout);
+                stateWriterFactory = &createUBJSONStateWriter;
+            } else {
+                std::cerr << "error: unsupported dump format `" << optarg << "`\n";
+                return EXIT_FAILURE;
+            }
+            break;
         case CORE_OPT:
             retrace::setFeatureLevel("3_2_core");
             break;
@@ -722,6 +766,9 @@ int main(int argc, char **argv)
                 driver = DRIVER_MODULE;
                 driverModule = optarg;
             }
+            break;
+        case FULLSCREEN_OPT:
+            retrace::forceWindowed = false;
             break;
         case SB_OPT:
             retrace::doubleBuffer = false;
@@ -822,6 +869,16 @@ int main(int argc, char **argv)
     }
 #endif
 
+#ifdef _WIN32
+    // Set Windows timer resolution to the minimum period supported by the
+    // system
+    TIMECAPS tc;
+    MMRESULT mmRes = timeGetDevCaps(&tc, sizeof tc);
+    if (mmRes == MMSYSERR_NOERROR) {
+        mmRes = timeBeginPeriod(tc.wPeriodMin);
+    }
+#endif
+
     retrace::setUp();
     if (retrace::profiling) {
         retrace::profiler.setup(retrace::profilingCpuTimes, retrace::profilingGpuTimes, retrace::profilingPixelsDrawn, retrace::profilingMemoryUsage);
@@ -843,6 +900,12 @@ int main(int argc, char **argv)
 
     // XXX: X often hangs on XCloseDisplay
     //retrace::cleanUp();
+
+#ifdef _WIN32
+    if (mmRes == MMSYSERR_NOERROR) {
+        timeEndPeriod(tc.wPeriodMin);
+    }
+#endif
 
     return 0;
 }

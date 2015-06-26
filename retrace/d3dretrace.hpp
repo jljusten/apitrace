@@ -23,8 +23,7 @@
  *
  **************************************************************************/
 
-#ifndef _D3DRETRACE_HPP_
-#define _D3DRETRACE_HPP_
+#pragma once
 
 
 #include <windows.h>
@@ -60,12 +59,13 @@ public:
     }
 
     bool
-    dumpState(std::ostream &os) {
-        if (!pLastDevice) {
-            return false;
-        }
-        d3dstate::dumpDevice(os, pLastDevice);
-        return true;
+    canDump(void) {
+        return pLastDevice;
+    }
+
+    void
+    dumpState(StateWriter &writer) {
+        d3dstate::dumpDevice(writer, pLastDevice);
     }
 
     inline void
@@ -96,4 +96,3 @@ processEvents(void);
 } /* namespace d3dretrace */
 
 
-#endif /* _D3DRETRACE_HPP_ */

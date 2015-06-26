@@ -25,8 +25,7 @@
  *
  **************************************************************************/
 
-#ifndef _RETRACE_HPP_
-#define _RETRACE_HPP_
+#pragma once
 
 #include <assert.h>
 #include <string.h>
@@ -50,6 +49,8 @@
 namespace image {
     class Image;
 }
+
+class StateWriter;
 
 
 namespace retrace {
@@ -107,10 +108,10 @@ extern int verbosity;
 extern unsigned debug;
 
 /**
- * Always force windowed, as there is no guarantee that the original display
- * mode is available.
+ * Whether to force windowed. Recommeded, as there is no guarantee that the
+ * original display mode is available.
  */
-static const bool forceWindowed = true;
+extern bool forceWindowed;
 
 /**
  * Add profiling data to the dump when retracing.
@@ -203,14 +204,13 @@ class Dumper
 {
 public:
     virtual image::Image *
-    getSnapshot(void) {
-        return NULL;
-    }
+    getSnapshot(void) = 0;
 
     virtual bool
-    dumpState(std::ostream &os) {
-        return false;
-    }
+    canDump(void) = 0;
+
+    virtual void
+    dumpState(StateWriter &) = 0;
 };
 
 
@@ -251,4 +251,3 @@ cleanUp(void);
 
 } /* namespace retrace */
 
-#endif /* _RETRACE_HPP_ */
