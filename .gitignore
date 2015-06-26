@@ -39,4 +39,6 @@ eglretrace
 glretrace
 install_manifest.txt
 qapitrace
+qubjson_test
 traces
+Testing

@@ -193,7 +193,7 @@ IDirect3DDevice9.methods += [
     StdMethod(HRESULT, "GetDepthStencilSurface", [Out(Pointer(PDIRECT3DSURFACE9), "ppZStencilSurface")]),
     StdMethod(HRESULT, "BeginScene", []),
     StdMethod(HRESULT, "EndScene", []),
-    StdMethod(HRESULT, "Clear", [(DWORD, "Count"), (ConstPointer(D3DRECT), "pRects"), (D3DCLEAR, "Flags"), (D3DCOLOR, "Color"), (Float, "Z"), (DWORD, "Stencil")]),
+    StdMethod(HRESULT, "Clear", [(DWORD, "Count"), (Array(Const(D3DRECT), "Count"), "pRects"), (D3DCLEAR, "Flags"), (D3DCOLOR, "Color"), (Float, "Z"), (DWORD, "Stencil")]),
     StdMethod(HRESULT, "SetTransform", [(D3DTRANSFORMSTATETYPE, "State"), (ConstPointer(D3DMATRIX), "pMatrix")]),
     StdMethod(HRESULT, "GetTransform", [(D3DTRANSFORMSTATETYPE, "State"), Out(Pointer(D3DMATRIX), "pMatrix")], sideeffects=False),
     StdMethod(HRESULT, "MultiplyTransform", [(D3DTRANSFORMSTATETYPE, "State"), (ConstPointer(D3DMATRIX), "pMatrix")]),
@@ -205,8 +205,8 @@ IDirect3DDevice9.methods += [
     StdMethod(HRESULT, "GetLight", [(DWORD, "Index"), Out(Pointer(D3DLIGHT9), "pLight")], sideeffects=False),
     StdMethod(HRESULT, "LightEnable", [(DWORD, "Index"), (BOOL, "Enable")]),
     StdMethod(HRESULT, "GetLightEnable", [(DWORD, "Index"), Out(Pointer(BOOL), "pEnable")], sideeffects=False),
-    StdMethod(HRESULT, "SetClipPlane", [(DWORD, "Index"), (ConstPointer(Float), "pPlane")]),
-    StdMethod(HRESULT, "GetClipPlane", [(DWORD, "Index"), Out(Pointer(Float), "pPlane")], sideeffects=False),
+    StdMethod(HRESULT, "SetClipPlane", [(DWORD, "Index"), (Array(Const(Float), 4), "pPlane")]),
+    StdMethod(HRESULT, "GetClipPlane", [(DWORD, "Index"), Out(Array(Float, 4), "pPlane")], sideeffects=False),
     StdMethod(HRESULT, "SetRenderState", [(D3DRENDERSTATETYPE, "State"), (D3DRENDERSTATEVALUE, "Value")]),
     StdMethod(HRESULT, "GetRenderState", [(D3DRENDERSTATETYPE, "State"), Out(Pointer(D3DRENDERSTATEVALUE), "pValue")], sideeffects=False),
     StdMethod(HRESULT, "CreateStateBlock", [(D3DSTATEBLOCKTYPE, "Type"), Out(Pointer(PDIRECT3DSTATEBLOCK9), "ppSB")]),
@@ -221,8 +221,8 @@ IDirect3DDevice9.methods += [
     StdMethod(HRESULT, "GetSamplerState", [(DWORD, "Sampler"), (D3DSAMPLERSTATETYPE, "Type"), Out(Pointer(D3DSAMPLERSTATEVALUE), "pValue")], sideeffects=False),
     StdMethod(HRESULT, "SetSamplerState", [(DWORD, "Sampler"), (D3DSAMPLERSTATETYPE, "Type"), (D3DSAMPLERSTATEVALUE, "Value")]),
     StdMethod(HRESULT, "ValidateDevice", [Out(Pointer(DWORD), "pNumPasses")]),
-    StdMethod(HRESULT, "SetPaletteEntries", [(UINT, "PaletteNumber"), (ConstPointer(PALETTEENTRY), "pEntries")]),
-    StdMethod(HRESULT, "GetPaletteEntries", [(UINT, "PaletteNumber"), Out(Pointer(PALETTEENTRY), "pEntries")], sideeffects=False),
+    StdMethod(HRESULT, "SetPaletteEntries", [(UINT, "PaletteNumber"), (Array(Const(PALETTEENTRY), 256), "pEntries")]),
+    StdMethod(HRESULT, "GetPaletteEntries", [(UINT, "PaletteNumber"), Out(Array(PALETTEENTRY, 256), "pEntries")], sideeffects=False),
     StdMethod(HRESULT, "SetCurrentTexturePalette", [(UINT, "PaletteNumber")]),
     StdMethod(HRESULT, "GetCurrentTexturePalette", [Out(Pointer(UINT), "PaletteNumber")], sideeffects=False),
     StdMethod(HRESULT, "SetScissorRect", [(ConstPointer(RECT), "pRect")]),
@@ -363,8 +363,8 @@ IDirect3DSurface9.methods += [
     StdMethod(HRESULT, "GetDesc", [Out(Pointer(D3DSURFACE_DESC), "pDesc")], sideeffects=False),
     StdMethod(HRESULT, "LockRect", [Out(Pointer(D3DLOCKED_RECT), "pLockedRect"), (ConstPointer(RECT), "pRect"), (D3DLOCK, "Flags")]),
     StdMethod(HRESULT, "UnlockRect", []),
-    StdMethod(HRESULT, "GetDC", [Out(Pointer(HDC), "phdc")]),
-    StdMethod(HRESULT, "ReleaseDC", [(HDC, "hdc")]),
+    StdMethod(HRESULT, "GetDC", [Out(Pointer(HDC), "phdc")], sideeffects=False),
+    StdMethod(HRESULT, "ReleaseDC", [(HDC, "hdc")], sideeffects=False),
 ]
 
 IDirect3DVolume9.methods += [
@@ -429,6 +429,7 @@ d3d9.addInterfaces([
 
 # D3DPERF_* functions can also be used by D3D10 applications, so keep them in a
 # separate module to be merged as necessary
+# See http://web.archive.org/web/20110510070258/http://msdn.microsoft.com/en-us/library/ee417071%28v=VS.85%29.aspx
 d3dperf = Module("d3d9")
 d3dperf.addFunctions([
     StdFunction(Int, "D3DPERF_BeginEvent", [(D3DCOLOR, "col"), (LPCWSTR, "wszName")], fail='-1', sideeffects=False),

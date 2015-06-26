@@ -1127,7 +1127,7 @@ parameters = [
     ("glGet",	I,	1,	"GL_MAX_LABEL_LENGTH"),	# 0x82E8
     ("",	X,	1,	"GL_NUM_SHADING_LANGUAGE_VERSIONS"),	# 0x82E9
     ("",	X,	1,	"GL_QUERY_TARGET"),	# 0x82EA
-    ("",	X,	1,	"GL_TEXTURE_BINDING"),	# 0x82EB
+    #("",	X,	1,	"GL_TEXTURE_BINDING"),	# 0x82EB
     ("",	X,	1,	"GL_TRANSFORM_FEEDBACK_OVERFLOW_ARB"),	# 0x82EC
     ("",	X,	1,	"GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB"),	# 0x82ED
     ("",	X,	1,	"GL_VERTICES_SUBMITTED_ARB"),	# 0x82EE
@@ -1350,10 +1350,10 @@ parameters = [
     ("",	X,	1,	"GL_DEPTH_STENCIL"),	# 0x84F9
     ("",	X,	1,	"GL_UNSIGNED_INT_24_8"),	# 0x84FA
     ("glGet",	F,	1,	"GL_MAX_TEXTURE_LOD_BIAS"),	# 0x84FD
-    ("glGetTexParameter",	F,	1,	"GL_TEXTURE_MAX_ANISOTROPY_EXT"),	# 0x84FE
+    ("glGetTexParameter,glGetSamplerParameter",	F,	1,	"GL_TEXTURE_MAX_ANISOTROPY_EXT"),	# 0x84FE
     ("glGet",	F,	1,	"GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT"),	# 0x84FF
     ("",	X,	1,	"GL_TEXTURE_FILTER_CONTROL"),	# 0x8500
-    ("glGetTexParameter,glGetTexEnv",	F,	1,	"GL_TEXTURE_LOD_BIAS"),	# 0x8501
+    ("glGetTexParameter,glGetSamplerParameter,glGetTexEnv",	F,	1,	"GL_TEXTURE_LOD_BIAS"),	# 0x8501
     ("",	X,	1,	"GL_MODELVIEW1_STACK_DEPTH_EXT"),	# 0x8502
     ("",	X,	1,	"GL_COMBINE4_NV"),	# 0x8503
     ("glGet",	F,	1,	"GL_MAX_SHININESS_NV"),	# 0x8504
@@ -2363,7 +2363,7 @@ parameters = [
     ("glGetActiveUniformBlock",	B,	1,	"GL_UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER"),	# 0x8A44
     ("glGetActiveUniformBlock",	B,	1,	"GL_UNIFORM_BLOCK_REFERENCED_BY_GEOMETRY_SHADER"),	# 0x8A45
     ("glGetActiveUniformBlock",	B,	1,	"GL_UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER"),	# 0x8A46
-    ("glGetTexParameter",	E,	1,	"GL_TEXTURE_SRGB_DECODE_EXT"),	# 0x8A48
+    ("glGetTexParameter,glGetSamplerParameter",	E,	1,	"GL_TEXTURE_SRGB_DECODE_EXT"),	# 0x8A48
     ("",	X,	1,	"GL_DECODE_EXT"),	# 0x8A49
     ("",	X,	1,	"GL_SKIP_DECODE_EXT"),	# 0x8A4A
     ("",	X,	1,	"GL_PROGRAM_PIPELINE_OBJECT_EXT"),	# 0x8A4F
@@ -2605,6 +2605,22 @@ parameters = [
     ("",	X,	1,	"GL_COLOR_ATTACHMENT13"),	# 0x8CED
     ("",	X,	1,	"GL_COLOR_ATTACHMENT14"),	# 0x8CEE
     ("",	X,	1,	"GL_COLOR_ATTACHMENT15"),	# 0x8CEF
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT16"),	# 0x8CF0
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT17"),	# 0x8CF1
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT18"),	# 0x8CF2
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT19"),	# 0x8CF3
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT20"),	# 0x8CF4
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT21"),	# 0x8CF5
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT22"),	# 0x8CF6
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT23"),	# 0x8CF7
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT24"),	# 0x8CF8
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT25"),	# 0x8CF9
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT26"),	# 0x8CFA
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT27"),	# 0x8CFB
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT28"),	# 0x8CFC
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT29"),	# 0x8CFD
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT30"),	# 0x8CFE
+    ("",	X,	1,	"GL_COLOR_ATTACHMENT31"),	# 0x8CFF
     ("",	X,	1,	"GL_DEPTH_ATTACHMENT"),	# 0x8D00
     ("",	X,	1,	"GL_STENCIL_ATTACHMENT"),	# 0x8D20
     ("",	X,	1,	"GL_FRAMEBUFFER"),	# 0x8D40
@@ -2786,7 +2802,7 @@ parameters = [
     ("glGet",	I,	1,	"GL_TRANSFORM_FEEDBACK_BINDING"),	# 0x8E25
     ("",	X,	1,	"GL_FRAME_NV"),	# 0x8E26
     ("",	X,	1,	"GL_FIELDS_NV"),	# 0x8E27
-    ("",	X,	1,	"GL_TIMESTAMP"),	# 0x8E28
+    ("_glGet",	I64,	1,	"GL_TIMESTAMP"),	# 0x8E28
     ("",	X,	1,	"GL_NUM_FILL_STREAMS_NV"),	# 0x8E29
     ("",	X,	1,	"GL_PRESENT_TIME_NV"),	# 0x8E2A
     ("",	X,	1,	"GL_PRESENT_DURATION_NV"),	# 0x8E2B

@@ -97,7 +97,13 @@ class D3DRetracer(Retracer):
             print r'    if (retrace::forceWindowed) {'
             print r'        pPresentationParameters->Windowed = TRUE;'
             print r'        pPresentationParameters->FullScreen_RefreshRateInHz = 0;'
+            if interface.name.startswith('IDirect3D8'):
+                print r'        pPresentationParameters->FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_DEFAULT;'
             print r'    }'
+            if 'BehaviorFlags' in method.argNames():
+                print r'    if (retrace::dumpingState) {'
+                print r'        BehaviorFlags &= ~D3DCREATE_PUREDEVICE;'
+                print r'    }'
 
             # On D3D8, ensure we use BackBufferFormat compatible with the
             # current DisplayFormat.
@@ -107,14 +113,17 @@ class D3DRetracer(Retracer):
             # valid values for BackBufferFormat include D3DFMT_X1R5G5B5 and
             # D3DFMT_A1R5G5B5, but exclude D3DFMT_R5G6B5.
             if interface.name.startswith('IDirect3D8'):
-                print r'    D3DDISPLAYMODE Mode;'
-                print r'    HRESULT hr;'
-                print r'    hr = _this->GetAdapterDisplayMode(Adapter, &Mode);'
-                print r'    hr = _this->CheckDeviceType(Adapter, DeviceType, Mode.Format, pPresentationParameters->BackBufferFormat, pPresentationParameters->Windowed);'
-                print r'    if (hr == D3DERR_NOTAVAILABLE) {'
-                print r'        retrace::warning(call) << "forcing back buffer format to match display mode format\n";'
-                print r'        pPresentationParameters->BackBufferFormat = Mode.Format;'
-                print r'    };'
+                print r'    if (pPresentationParameters->Windowed) {'
+                print r'        D3DDISPLAYMODE Mode;'
+                print r'        HRESULT hr;'
+                print r'        hr = _this->GetAdapterDisplayMode(Adapter, &Mode);'
+                print r'        assert(SUCCEEDED(hr));'
+                print r'        hr = _this->CheckDeviceType(Adapter, DeviceType, Mode.Format, pPresentationParameters->BackBufferFormat, pPresentationParameters->Windowed);'
+                print r'        if (hr == D3DERR_NOTAVAILABLE) {'
+                print r'            retrace::warning(call) << "forcing back buffer format to match display mode format\n";'
+                print r'            pPresentationParameters->BackBufferFormat = Mode.Format;'
+                print r'        }'
+                print r'    }'
         
         if method.name in self.createDeviceMethodNames:
             # override the device type
@@ -201,7 +210,9 @@ class D3DRetracer(Retracer):
         if method.name in ('Lock', 'LockRect', 'LockBox'):
             print '    VOID *_pbData = NULL;'
             print '    size_t _MappedSize = 0;'
-            print '    _getMapInfo(_this, %s, _pbData, _MappedSize);' % ', '.join(method.argNames()[:-1])
+            print '    if (!(Flags & D3DLOCK_READONLY)) {'
+            print '        _getMapInfo(_this, %s, _pbData, _MappedSize);' % ', '.join(method.argNames()[:-1])
+            print '    }'
             print '    if (_MappedSize) {'
             print '        _maps[MappingKey(_this, %s)] = _pbData;' % mapping_subkey()
             self.checkPitchMismatch(method)

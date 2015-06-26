@@ -3,7 +3,7 @@
 
 
 if (ENABLE_STATIC_LIBGCC)
-    add_linker_flags (-static-libgcc -Wl,--exclude-libs,libgcc.a)
+    add_linker_flags (-static-libgcc)
 endif ()
 if (ENABLE_STATIC_LIBSTDCXX)
     # Unfortunately for a long time static libstdcxx didn't built with -fPIC
@@ -21,9 +21,31 @@ if (ENABLE_STATIC_LIBSTDCXX)
     unset (CMAKE_REQUIRED_LIBRARIES)
     unset (CMAKE_REQUIRED_FLAGS)
     if (STATIC_LIBSTDCXX_PIC)
-        add_linker_flags (-static-libstdc++ -Wl,--exclude-libs,libstdc++.a)
+        add_linker_flags (-static-libstdc++)
     endif ()
 endif ()
+
+macro (target_linker_version_script target version_script)
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+        # https://sourceware.org/binutils/docs/ld/VERSION.html
+        set_property (
+            TARGET ${target}
+            APPEND_STRING
+            PROPERTY LINK_FLAGS " -Wl,--version-script=${version_script}"
+        )
+        # XXX: Unfortunately LINK_DEPENDS is ignored in non-Makefile generators
+        # See also http://www.cmake.org/pipermail/cmake/2010-May/037206.html
+        add_custom_target (${target}_version_script
+            DEPENDS ${version_script}
+            VERBATIM
+        )
+        #set_property (
+        #    TARGET ${target}
+        #    PROPERTY LINK_DEPENDS ${version_script}
+        #)
+        add_dependencies (${target} ${target}_version_script)
+    endif ()
+endmacro ()
 
 set (CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -34,6 +56,14 @@ include_directories (
 )
 
 set (CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_convenience_library (trace
+    assert.cpp
+)
+target_link_libraries (trace
+    common
+    ${SNAPPY_LIBRARIES}
+)
 
 if (WIN32)
     if (MINGW)
@@ -62,8 +92,7 @@ if (WIN32)
         )
         add_library (ddrawtrace MODULE ddraw.def ddrawtrace.cpp)
         target_link_libraries (ddrawtrace
-            common
-            ${SNAPPY_LIBRARIES}
+            trace
         )
         set_target_properties (ddrawtrace PROPERTIES
             PREFIX ""
@@ -97,8 +126,7 @@ if (WIN32)
         )
         target_link_libraries (d3d8trace
             d3dhelpers
-            common
-            ${SNAPPY_LIBRARIES}
+            trace
         )
         set_target_properties (d3d8trace PROPERTIES
             PREFIX ""
@@ -133,8 +161,7 @@ if (WIN32)
         )
         target_link_libraries (d3d9trace
             d3dhelpers
-            common
-            ${SNAPPY_LIBRARIES}
+            trace
         )
         set_target_properties (d3d9trace PROPERTIES
             PREFIX ""
@@ -173,8 +200,7 @@ if (WIN32)
         )
         target_link_libraries (dxgitrace
             d3dhelpers
-            common
-            ${SNAPPY_LIBRARIES}
+            trace
         )
         set_target_properties (dxgitrace
             PROPERTIES PREFIX ""
@@ -205,8 +231,7 @@ if (WIN32)
         )
         add_library (d2d1trace MODULE d2d1trace.def d2d1trace.cpp)
         target_link_libraries (d2d1trace
-            common
-            ${SNAPPY_LIBRARIES}
+            trace
         )
         set_target_properties (d2d1trace
             PROPERTIES PREFIX ""
@@ -242,8 +267,7 @@ if (WIN32)
     target_link_libraries (wgltrace
         glhelpers
         glproc_gl
-        common
-        ${SNAPPY_LIBRARIES}
+        trace
     )
     set_target_properties (wgltrace PROPERTIES
         PREFIX ""
@@ -290,10 +314,9 @@ elseif (APPLE)
     target_link_libraries (cgltrace
         glhelpers
         glproc_gl
-        common
-        ${SNAPPY_LIBRARIES}
+        trace
         ${CMAKE_THREAD_LIBS_INIT}
-        dl
+        ${CMAKE_DL_LIBS}
     )
 
     install (TARGETS cgltrace FRAMEWORK DESTINATION ${WRAPPER_INSTALL_DIR})
@@ -336,22 +359,12 @@ elseif (X11_FOUND)
     target_link_libraries (glxtrace
         glhelpers
         glproc_gl
-        common
-        ${SNAPPY_LIBRARIES}
+        trace
         ${CMAKE_THREAD_LIBS_INIT}
-        dl
+        ${CMAKE_DL_LIBS}
     )
 
-    # Check and warn if there are unexpected symbols
-    add_custom_command (
-        TARGET glxtrace
-        POST_BUILD
-        COMMAND
-            ${CMAKE_NM} --dynamic --defined-only $<TARGET_FILE:glxtrace>
-            | sed -f ${CMAKE_CURRENT_SOURCE_DIR}/glxtrace-nm.sed 1>&2
-        COMMENT "Checking glxtrace.so symbols..."
-        VERBATIM
-    )
+    target_linker_version_script (glxtrace ${CMAKE_CURRENT_SOURCE_DIR}/glxtrace.version)
 
     install (TARGETS glxtrace LIBRARY DESTINATION ${WRAPPER_INSTALL_DIR})
 endif ()
@@ -397,11 +410,12 @@ if (ENABLE_EGL AND NOT WIN32 AND NOT APPLE)
     target_link_libraries (egltrace
         glhelpers
         glproc_egl
-        common
-        ${SNAPPY_LIBRARIES}
+        trace
         ${CMAKE_THREAD_LIBS_INIT}
-        dl
+        ${CMAKE_DL_LIBS}
     )
+
+    target_linker_version_script (egltrace ${CMAKE_CURRENT_SOURCE_DIR}/egltrace.version)
 
     install (TARGETS egltrace LIBRARY DESTINATION ${WRAPPER_INSTALL_DIR})
 endif ()

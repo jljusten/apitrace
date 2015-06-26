@@ -1382,9 +1382,9 @@ IDirectDraw7.methods += [
 
 IDirectDrawPalette.methods += [
     StdMethod(DDRESULT, "GetCaps", [Out(Pointer(DirectDrawPaletteCapsFlags), "lpdwCaps")], sideeffects=False),
-    StdMethod(DDRESULT, "GetEntries", [(DWORD, "dwFlags"), (DWORD, "dwBase"), (DWORD, "dwNumEntries"), Out(LPPALETTEENTRY, "lpEntries")], sideeffects=False),
+    StdMethod(DDRESULT, "GetEntries", [(DWORD, "dwFlags"), (DWORD, "dwBase"), (DWORD, "dwNumEntries"), Out(Array(PALETTEENTRY, "dwNumEntries"), "lpEntries")], sideeffects=False),
     StdMethod(DDRESULT, "Initialize", [(LPDIRECTDRAW, "lpDD"), (DWORD, "dwFlags"), (LPPALETTEENTRY, "lpDDColorTable")]),
-    StdMethod(DDRESULT, "SetEntries", [(DWORD, "dwFlags"), (DWORD, "dwStartingEntry"), (DWORD, "dwCount"), (LPPALETTEENTRY, "lpEntries")]),
+    StdMethod(DDRESULT, "SetEntries", [(DWORD, "dwFlags"), (DWORD, "dwStartingEntry"), (DWORD, "dwCount"), (Array(PALETTEENTRY, "dwCount"), "lpEntries")]),
 ]
 
 IDirectDrawClipper.methods += [
@@ -1421,7 +1421,7 @@ IDirectDrawSurface.methods += [
     StdMethod(DDRESULT, "Initialize", [(LPDIRECTDRAW, "lpDD"), (LPDDSURFACEDESC, "lpDDSurfaceDesc")]),
     StdMethod(DDRESULT, "IsLost", []),
     StdMethod(DDRESULT, "Lock", [(LPRECT, "lpDestRect"), InOut(LPDDSURFACEDESC, "lpDDSurfaceDesc"), (DirectDrawSurfaceLockFlags, "dwFlags"), (HANDLE, "hEvent")]),
-    StdMethod(DDRESULT, "ReleaseDC", [(HDC, "hDC")]),
+    StdMethod(DDRESULT, "ReleaseDC", [(HDC, "hDC")], sideeffects=False),
     StdMethod(DDRESULT, "Restore", []),
     StdMethod(DDRESULT, "SetClipper", [(LPDIRECTDRAWCLIPPER, "lpDDClipper")]),
     StdMethod(DDRESULT, "SetColorKey", [(DirectDrawSurfaceSetGetColorKeyFlags, "dwFlags"), Out(LPDDCOLORKEY, "lpDDColorKey")]),
@@ -1457,7 +1457,7 @@ IDirectDrawSurface2.methods += [
     StdMethod(DDRESULT, "Initialize", [(LPDIRECTDRAW, "lpDD"), (LPDDSURFACEDESC, "lpDDSurfaceDesc")]),
     StdMethod(DDRESULT, "IsLost", []),
     StdMethod(DDRESULT, "Lock", [(LPRECT, "lpDestRect"), InOut(LPDDSURFACEDESC, "lpDDSurfaceDesc"), (DirectDrawSurfaceLockFlags, "dwFlags"), (HANDLE, "hEvent")]),
-    StdMethod(DDRESULT, "ReleaseDC", [(HDC, "hDC")]),
+    StdMethod(DDRESULT, "ReleaseDC", [(HDC, "hDC")], sideeffects=False),
     StdMethod(DDRESULT, "Restore", []),
     StdMethod(DDRESULT, "SetClipper", [(LPDIRECTDRAWCLIPPER, "lpDDClipper")]),
     StdMethod(DDRESULT, "SetColorKey", [(DirectDrawSurfaceSetGetColorKeyFlags, "dwFlags"), Out(LPDDCOLORKEY, "lpDDColorKey")]),
@@ -1496,7 +1496,7 @@ IDirectDrawSurface3.methods += [
     StdMethod(DDRESULT, "Initialize", [(LPDIRECTDRAW, "lpDD"), (LPDDSURFACEDESC, "lpDDSurfaceDesc")]),
     StdMethod(DDRESULT, "IsLost", []),
     StdMethod(DDRESULT, "Lock", [(LPRECT, "lpDestRect"), InOut(LPDDSURFACEDESC, "lpDDSurfaceDesc"), (DirectDrawSurfaceLockFlags, "dwFlags"), (HANDLE, "hEvent")]),
-    StdMethod(DDRESULT, "ReleaseDC", [(HDC, "hDC")]),
+    StdMethod(DDRESULT, "ReleaseDC", [(HDC, "hDC")], sideeffects=False),
     StdMethod(DDRESULT, "Restore", []),
     StdMethod(DDRESULT, "SetClipper", [(LPDIRECTDRAWCLIPPER, "lpDDClipper")]),
     StdMethod(DDRESULT, "SetColorKey", [(DirectDrawSurfaceSetGetColorKeyFlags, "dwFlags"), Out(LPDDCOLORKEY, "lpDDColorKey")]),
@@ -1536,7 +1536,7 @@ IDirectDrawSurface4.methods += [
     StdMethod(DDRESULT, "Initialize", [(LPDIRECTDRAW, "lpDD"), (LPDDSURFACEDESC2, "lpDDSurfaceDesc")]),
     StdMethod(DDRESULT, "IsLost", []),
     StdMethod(DDRESULT, "Lock", [(LPRECT, "lpDestRect"), InOut(LPDDSURFACEDESC2, "lpDDSurfaceDesc"), (DirectDrawSurfaceLockFlags, "dwFlags"), (HANDLE, "hEvent")]),
-    StdMethod(DDRESULT, "ReleaseDC", [(HDC, "hDC")]),
+    StdMethod(DDRESULT, "ReleaseDC", [(HDC, "hDC")], sideeffects=False),
     StdMethod(DDRESULT, "Restore", []),
     StdMethod(DDRESULT, "SetClipper", [(LPDIRECTDRAWCLIPPER, "lpDDClipper")]),
     StdMethod(DDRESULT, "SetColorKey", [(DirectDrawSurfaceSetGetColorKeyFlags, "dwFlags"), Out(LPDDCOLORKEY, "lpDDColorKey")]),
@@ -1665,4 +1665,6 @@ ddraw.addFunctions([
 ddraw.addInterfaces([
     IDirectDrawSurface2,
     IDirectDrawSurface3,
+    IDirectDrawColorControl,
+    IDirectDrawGammaControl,
 ])

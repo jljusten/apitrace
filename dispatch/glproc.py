@@ -504,13 +504,17 @@ class GlDispatcher(Dispatcher):
     def failFunction(self, function):
         # We fake these when they are not available
         if sys.platform == 'darwin':
-            # Fallback to EXT_debug_label on MacOSX
+            # Fallback to EXT_debug_label on MacOSX, some enums need to be translated.
             if function.name == 'glObjectLabel':
-                print r'    _glLabelObjectEXT(identifier, name, length < 0 ? 0 : length, length == 0 ? "" : label);'
-                return
+                print r'    if (translateDebugLabelIdentifier(identifier)) {'
+                print r'        _glLabelObjectEXT(identifier, name, length < 0 ? 0 : length, length == 0 ? "" : label);'
+                print r'        return;'
+                print r'    }'
             if function.name == 'glGetObjectLabel':
-                print r'    _glGetObjectLabelEXT(identifier, name, bufSize, length, label);'
-                return
+                print r'    if (translateDebugLabelIdentifier(identifier)) {'
+                print r'        _glGetObjectLabelEXT(identifier, name, bufSize, length, label);'
+                print r'        return;'
+                print r'    }'
         if function.name in (
             # GL_KHR_debug
             'glDebugMessageControl',
@@ -566,8 +570,7 @@ if __name__ == '__main__':
 
     sys.stdout = open(decl, 'wt')
     print
-    print '#ifndef _GLPROC_HPP_'
-    print '#define _GLPROC_HPP_'
+    print '#pragma once'
     print
     print '#include "glimports.hpp"'
     print
@@ -600,8 +603,6 @@ if __name__ == '__main__':
     print
     dispatcher.dispatchModuleDecl(glapi)
     print
-    print '#endif /* !_GLPROC_HPP_ */'
-    print
 
     sys.stdout = open(impl, 'wt')
     print
@@ -617,6 +618,39 @@ if __name__ == '__main__':
     dispatcher.dispatchModuleImpl(wglapi)
     print
     print '#elif defined(__APPLE__)'
+    print
+    print 'static inline bool'
+    print 'translateDebugLabelIdentifier(GLenum & identifier)'
+    print '{'
+    print '    switch (identifier) {'
+    print '    case GL_TEXTURE:'
+    print '    case GL_FRAMEBUFFER:'
+    print '    case GL_RENDERBUFFER:'
+    print '    case GL_SAMPLER:'
+    print '    case GL_TRANSFORM_FEEDBACK:'
+    print '       return true;'
+    print '    case GL_BUFFER:'
+    print '       identifier = GL_BUFFER_OBJECT_EXT;'
+    print '       return true;'
+    print '    case GL_SHADER:'
+    print '       identifier = GL_SHADER_OBJECT_EXT;'
+    print '       return true;'
+    print '    case GL_PROGRAM:'
+    print '       identifier = GL_PROGRAM_OBJECT_EXT;'
+    print '       return true;'
+    print '    case GL_VERTEX_ARRAY:'
+    print '       identifier = GL_VERTEX_ARRAY_OBJECT_EXT;'
+    print '       return true;'
+    print '    case GL_QUERY:'
+    print '       identifier = GL_QUERY_OBJECT_EXT;'
+    print '       return true;'
+    print '    case GL_PROGRAM_PIPELINE:'
+    print '       identifier = GL_PROGRAM_PIPELINE_OBJECT_EXT;'
+    print '       return true;'
+    print '    default:'
+    print '       return false;'
+    print '    }'
+    print '}'
     print
     dispatcher.dispatchModuleImpl(cglapi)
     print

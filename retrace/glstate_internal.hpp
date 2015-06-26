@@ -23,16 +23,17 @@
  *
  **************************************************************************/
 
-#ifndef _GLSTATE_INTERNAL_HPP_
-#define _GLSTATE_INTERNAL_HPP_
+#pragma once
 
+
+#include <stdint.h>
 
 #include "glimports.hpp"
 #include "glproc.hpp"
 #include "image.hpp"
 
 
-class JSONWriter;
+class StateWriter;
 
 
 namespace glstate {
@@ -94,6 +95,9 @@ struct InternalFormatDesc
     /* The external format/type that matches the internalFormat exactly, or GL_NONE. */
     GLenum format;
     GLenum type;
+
+    /* The appropriate read type for dumping. */
+    GLenum readType;
 };
 
 
@@ -106,6 +110,26 @@ chooseReadBackFormat(const InternalFormatDesc &formatDesc, GLenum &format, GLenu
 void
 getImageFormat(GLenum format, GLenum type,
                GLuint &channels, image::ChannelType &channelType);
+
+
+// Abstract base class for pixel format conversion
+class PixelFormat
+{
+public:
+    virtual ~PixelFormat() {}
+
+    // Size in bytes
+    virtual size_t
+    size(void) const = 0;
+
+    // Unpack a span of pixels
+    virtual void
+    unpackSpan(const uint8_t *inSpan, float *outSpan, unsigned width) const = 0;
+};
+
+
+const PixelFormat *
+getPixelFormat(GLenum internalFormat);
 
 
 /**
@@ -151,25 +175,24 @@ bool
 isGeometryShaderBound(Context &context);
 
 
-void dumpBoolean(JSONWriter &json, GLboolean value);
+void dumpBoolean(StateWriter &writer, GLboolean value);
 
-void dumpEnum(JSONWriter &json, GLenum pname);
+void dumpEnum(StateWriter &writer, GLenum pname);
 
 char *
 getObjectLabel(Context &context, GLenum identifier, GLuint name);
 
-void dumpObjectLabel(JSONWriter &json, Context &context, GLenum identifier, GLuint name, const char *member);
+void dumpObjectLabel(StateWriter &writer, Context &context, GLenum identifier, GLuint name, const char *member);
 
-void dumpParameters(JSONWriter &json, Context &context);
+void dumpParameters(StateWriter &writer, Context &context);
 
-void dumpShadersUniforms(JSONWriter &json, Context &context);
+void dumpShadersUniforms(StateWriter &writer, Context &context);
 
-void dumpTextures(JSONWriter &json, Context &context);
+void dumpTextures(StateWriter &writer, Context &context);
 
-void dumpFramebuffer(JSONWriter &json, Context &context);
+void dumpFramebuffer(StateWriter &writer, Context &context);
 
 
 } /* namespace glstate */
 
 
-#endif /* _GLSTATE_INTERNAL_HPP_ */

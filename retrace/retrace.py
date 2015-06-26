@@ -124,12 +124,22 @@ class ValueDeserializer(stdapi.Visitor, stdapi.ExpanderMixin):
         self.visit(bitmask.type, lvalue, rvalue)
 
     def visitArray(self, array, lvalue, rvalue):
-
         tmp = '_a_' + array.tag + '_' + str(self.seq)
         self.seq += 1
 
         print '    if (%s) {' % (lvalue,)
         print '        const trace::Array *%s = (%s).toArray();' % (tmp, rvalue)
+
+        if self.insideStruct:
+            if isinstance(array.length, int):
+                # Member is an array
+                print r'    static_assert( std::is_array< std::remove_reference< decltype( %s ) >::type >::value , "lvalue must be an array" );' % lvalue
+                print r'    static_assert( std::extent< std::remove_reference< decltype( %s ) >::type >::value == %s, "array size mismatch" );' % (lvalue, array.length)
+            else:
+                # Member is a pointer to an array, hence must be allocated
+                print r'    static_assert( std::is_pointer< std::remove_reference< decltype( %s ) >::type >::value , "lvalue must be a pointer" );' % lvalue
+                print r'    %s = _allocator.allocArray<%s>(&%s);' % (lvalue, array.type, rvalue)
+
         length = '%s->values.size()' % (tmp,)
         index = '_j' + array.tag
         print '        for (size_t {i} = 0; {i} < {length}; ++{i}) {{'.format(i = index, length = length)
@@ -186,15 +196,21 @@ class ValueDeserializer(stdapi.Visitor, stdapi.ExpanderMixin):
 
     seq = 0
 
+    insideStruct = 0
+
     def visitStruct(self, struct, lvalue, rvalue):
         tmp = '_s_' + struct.tag + '_' + str(self.seq)
         self.seq += 1
+
+        self.insideStruct += 1
 
         print '    const trace::Struct *%s = (%s).toStruct();' % (tmp, rvalue)
         print '    assert(%s);' % (tmp)
         for i in range(len(struct.members)):
             member = struct.members[i]
             self.visitMember(member, lvalue, '*%s->members[%s]' % (tmp, i))
+
+        self.insideStruct -= 1
 
     def visitPolymorphic(self, polymorphic, lvalue, rvalue):
         if polymorphic.defaultType is None:
@@ -279,7 +295,7 @@ class SwizzledValueRegistrator(stdapi.Visitor, stdapi.ExpanderMixin):
     def visitLinearPointer(self, pointer, lvalue, rvalue):
         assert pointer.size is not None
         if pointer.size is not None:
-            print r'    retrace::addRegion((%s).toUIntPtr(), %s, %s);' % (rvalue, lvalue, pointer.size)
+            print r'    retrace::addRegion(call, (%s).toUIntPtr(), %s, %s);' % (rvalue, lvalue, pointer.size)
 
     def visitReference(self, reference, lvalue, rvalue):
         pass
@@ -472,7 +488,7 @@ class Retracer:
         arg_names = ", ".join(function.argNames())
         if function.type is not stdapi.Void:
             print '    _result = %s(%s);' % (function.name, arg_names)
-            self.checkResult(function.type)
+            self.checkResult(None, function)
         else:
             print '    %s(%s);' % (function.name, arg_names)
 
@@ -498,7 +514,7 @@ class Retracer:
             print r'    }'
 
         if method.type is not stdapi.Void:
-            self.checkResult(method.type)
+            self.checkResult(interface, method)
 
         # Debug COM reference counting.  Disabled by default as reported
         # reference counts depend on internal implementation details.
@@ -516,8 +532,9 @@ class Retracer:
             print r'        retrace::delObj(call.arg(0));'
             print r'    }'
 
-    def checkResult(self, resultType):
-        if str(resultType) == 'HRESULT':
+    def checkResult(self, interface, methodOrFunction):
+        assert methodOrFunction.type is not stdapi.Void
+        if str(methodOrFunction.type) == 'HRESULT':
             print r'    if (FAILED(_result)) {'
             print r'        retrace::failed(call, _result);'
             print r'        return;'
