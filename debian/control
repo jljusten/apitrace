@@ -9,15 +9,15 @@ Build-Depends:
  libegl1-mesa-dev,
  libgles1-mesa-dev,
  libgles2-mesa-dev,
- libqt4-dev,
- libqtwebkit-dev,
- libqjson-dev,
+ qtbase5-dev,
+ libqt5webkit5-dev,
  pkg-config,
  python,
  zlib1g-dev,
  libsnappy-dev,
  libpng12-dev,
  libbsd-dev,
+ libprocps-dev,
 Standards-Version: 3.9.5
 Homepage: https://apitrace.github.io
 Vcs-Git: git://git.debian.org/pkg-xorg/app/apitrace.git
