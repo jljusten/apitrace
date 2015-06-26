@@ -2,3 +2,4 @@
 #02_no_zlib_internals.patch
 use-system-libbacktrace
 use-system-md5
+use-system-snappy.patch
