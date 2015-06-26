@@ -1,0 +1,24 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -432,9 +432,7 @@
+     add_definitions (-DHAVE_BACKTRACE=1)
+ endif ()
+ 
+-add_subdirectory (thirdparty/md5)
+-set (MD5_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/md5)
+-set (MD5_LIBRARIES md5_bundled)
++set (MD5_LIBRARIES bsd)
+ 
+ # We use bundled headers for all Khronos APIs, to guarantee support for both
+ # OpenGL and OpenGL ES at build time, because the OpenGL and OpenGL ES 1 APIs
+--- a/image/image_md5.cpp
++++ b/image/image_md5.cpp
+@@ -28,7 +28,7 @@
+ #include <fstream>
+ #include "image.hpp"
+ 
+-#include "md5.h"
++#include <bsd/md5.h>
+ 
+ 
+ using namespace std;

@@ -1,2 +1,4 @@
-01_use-system-qjson.diff
-02_no_zlib_internals.patch
+#01_use-system-qjson.diff
+#02_no_zlib_internals.patch
+use-system-libbacktrace
+use-system-md5
