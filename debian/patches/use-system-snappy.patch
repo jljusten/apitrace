@@ -1,6 +1,6 @@
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -383,11 +383,18 @@
+@@ -403,11 +403,18 @@
      find_package (SNAPPY)
  endif ()
  if (ENABLE_STATIC_SNAPPY OR NOT SNAPPY_FOUND)
@@ -31,26 +31,17 @@
 +include_directories (${SNAPPY_STATIC_INCLUDE_DIRS})
 +
  if (ENABLE_STATIC_LIBGCC)
-     add_linker_flags (-static-libgcc -Wl,--exclude-libs,libgcc.a)
+     add_linker_flags (-static-libgcc)
  endif ()
-@@ -337,7 +339,7 @@
-         glhelpers
-         glproc_gl
-         common
--        ${SNAPPY_LIBRARIES}
-+        ${SNAPPY_STATIC_LIBRARIES}
-         ${CMAKE_THREAD_LIBS_INIT}
-         dl
-     )
-@@ -398,7 +400,7 @@
-         glhelpers
-         glproc_egl
-         common
--        ${SNAPPY_LIBRARIES}
-+        ${SNAPPY_STATIC_LIBRARIES}
-         ${CMAKE_THREAD_LIBS_INIT}
-         dl
-     )
+@@ -62,7 +64,7 @@
+ )
+ target_link_libraries (trace
+     common
+-    ${SNAPPY_LIBRARIES}
++    ${SNAPPY_STATIC_LIBRARIES}
+ )
+ 
+ if (WIN32)
 --- a/cli/CMakeLists.txt
 +++ b/cli/CMakeLists.txt
 @@ -14,6 +14,8 @@
@@ -64,7 +55,7 @@
      cli_diff.cpp
 --- a/gui/CMakeLists.txt
 +++ b/gui/CMakeLists.txt
-@@ -63,6 +63,7 @@
+@@ -82,6 +82,7 @@
  #add_app_icon(qapitrace_SRCS ../icons/hi*-qapitrace.png)
  include_directories(
      ${CMAKE_SOURCE_DIR} # for image/*
