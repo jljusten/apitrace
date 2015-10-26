@@ -1,3 +1,7 @@
+Description: Use md5 implementation from system libbsd
+Forwarded: not-needed
+Author: Christopher James Halse Rogers <raof@ubuntu.com>
+
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -432,9 +432,7 @@

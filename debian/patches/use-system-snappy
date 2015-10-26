@@ -1,3 +1,11 @@
+Description: Use system libsnappy for retracers
+ The tracers run LD_PRELOADed into arbitrary, often closed-source binaries,
+ so statically-link libsnappy to minimise the possibility of symbol conflicts,
+ but the retracers don't have that constraint and are used to process untrusted
+ data.
+Forwarded: not-needed
+Author: Christopher James Halse Rogers <raof@ubuntu.com>
+
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -403,11 +403,18 @@
