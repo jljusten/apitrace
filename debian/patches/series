@@ -1,5 +1,6 @@
 #01_use-system-qjson.diff
 #02_no_zlib_internals.patch
+use-system-gtest.diff
 use-system-libbacktrace
 use-system-md5
 use-system-snappy.patch

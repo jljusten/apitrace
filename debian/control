@@ -18,6 +18,7 @@ Build-Depends:
  libpng12-dev,
  libbsd-dev,
  libprocps-dev,
+ libgtest-dev,
 Standards-Version: 3.9.5
 Homepage: https://apitrace.github.io
 Vcs-Git: git://git.debian.org/pkg-xorg/app/apitrace.git
