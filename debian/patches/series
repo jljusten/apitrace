@@ -1,4 +1,4 @@
-use-system-gtest.diff
+use-system-gtest
 use-system-libbacktrace
 use-system-md5
-use-system-snappy.patch
+use-system-snappy
