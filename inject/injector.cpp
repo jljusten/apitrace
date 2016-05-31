@@ -260,7 +260,7 @@ attachDebugger(DWORD dwProcessId)
     HKEY hKey;
     lRet = RegOpenKeyExA(HKEY_LOCAL_MACHINE, "Software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug", 0, KEY_READ, &hKey);
     if (lRet != ERROR_SUCCESS) {
-        debugPrintf("error: RegOpenKeyExA failed\n");
+        debugPrintf("inject: error: RegOpenKeyExA failed\n");
         return FALSE;
     }
 
@@ -271,7 +271,11 @@ attachDebugger(DWORD dwProcessId)
     RegCloseKey(hKey);
 
     if (lRet != ERROR_SUCCESS) {
-        debugPrintf("error: RegQueryValueExA failed\n");
+        if (lRet == ERROR_FILE_NOT_FOUND) {
+            debugPrintf("inject: error: no automatic debugger configured\n");
+        } else {
+            debugPrintf("inject: error: RegQueryValueExA failed (0x%08lx)\n", lRet);
+        }
         return FALSE;
     }
 
@@ -302,7 +306,9 @@ attachDebugger(DWORD dwProcessId)
            NULL, // current directory
            &si,
            &pi)) {
-        debugPrintf("error: CreateProcessA failed 0x%08lx\n", GetLastError());
+        debugPrintf("inject: error: failed to execute \"%s\" with 0x%08lx\n",
+                    szDebuggerCommand,
+                    GetLastError());
     } else {
         HANDLE handles[] = {
             hEvent,
@@ -357,6 +363,85 @@ isNumber(const char *arg) {
     return true;
 }
 
+
+static BOOL
+ejectDll(HANDLE hProcess, const char *szDllPath)
+{
+    /*
+     * Enumerate all modules.
+     */
+
+    HMODULE *phModules = NULL;
+    DWORD cb = sizeof *phModules *
+#ifdef NDEBUG
+        32
+#else
+        4
+#endif
+    ;
+    DWORD cbNeeded = 0;
+    while (true) {
+        phModules = (HMODULE *)realloc(phModules, cb);
+        if (!EnumProcessModules(hProcess, phModules, cb, &cbNeeded)) {
+            logLastError("failed to enumerate modules in remote process");
+            free(phModules);
+            return FALSE;
+        }
+
+        if (cbNeeded < cb) {
+            break;
+        }
+
+        cb *= 2;
+    }
+
+    DWORD cNumModules = cbNeeded / sizeof *phModules;
+
+    /*
+     * Search our DLL.
+     */
+
+    const char *szDllName = getBaseName(szDllPath);
+    HMODULE hModule = NULL;
+    for (unsigned i = 0; i < cNumModules; ++i) {
+        char szModName[MAX_PATH];
+        if (GetModuleFileNameExA(hProcess, phModules[i], szModName, ARRAY_SIZE(szModName))) {
+            if (stricmp(getBaseName(szModName), szDllName) == 0) {
+                hModule = phModules[i];
+                break;
+            }
+        }
+    }
+
+    free(phModules);
+
+    if (!hModule) {
+        debugPrintf("inject: error: failed to find %s module in the remote process\n", szDllName);
+        return FALSE;
+    }
+
+    PTHREAD_START_ROUTINE lpStartAddress =
+        (PTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("KERNEL32"), "FreeLibrary");
+
+    HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, lpStartAddress, hModule, 0, NULL);
+    if (!hThread) {
+        logLastError("failed to create remote thread");
+        return FALSE;
+    }
+
+    WaitForSingleObject(hThread, INFINITE);
+
+    DWORD bRet = 0;
+    GetExitCodeThread(hThread, &bRet);
+    if (!bRet) {
+        debugPrintf("inject: error: failed to unload %s from the remote process\n", szDllPath);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+
 static void
 help(void)
 {
@@ -369,13 +454,17 @@ help(void)
 }
 
 
+static const char *short_options =
+"hdD:p:t:v";
+
 static const struct
 option long_options[] = {
-    { "help", 0, NULL, 'h'},
-    { "debug", 0, NULL, 'd'},
-    { "dll", 1, NULL, 'D'},
-    { "pid", 1, NULL, 'p'},
-    { "tid", 1, NULL, 't'},
+    { "help", no_argument, NULL, 'h'},
+    { "debug", no_argument, NULL, 'd'},
+    { "dll", required_argument, NULL, 'D'},
+    { "pid", required_argument, NULL, 'p'},
+    { "tid", required_argument, NULL, 't'},
+    { "verbose", no_argument, 0, 'v'},
     { NULL, 0, NULL, 0}
 };
 
@@ -387,12 +476,13 @@ main(int argc, char *argv[])
     BOOL bAttach = FALSE;
     DWORD dwProcessId = 0;
     DWORD dwThreadId = 0;
+    char cVerbosity = 0;
 
     const char *szDll = NULL;
 
     int option_index = 0;
     while (true) {
-        int opt = getopt_long_only(argc, argv, "hdD:p:t:", long_options, &option_index);
+        int opt = getopt_long_only(argc, argv, short_options, long_options, &option_index);
         if (opt == -1) {
             break;
         }
@@ -413,6 +503,9 @@ main(int argc, char *argv[])
             case 't':
                 dwThreadId = strtoul(optarg, NULL, 0);
                 bAttach = TRUE;
+                break;
+            case 'v':
+                ++cVerbosity;
                 break;
             default:
                 debugPrintf("inject: invalid option '%c'\n", optopt);
@@ -468,7 +561,26 @@ main(int argc, char *argv[])
             return 1;
         }
 
-        SetSharedMem(szDll);
+        // Create a NULL DACL to enable the shared memory being accessed by any
+        // process we attach to.
+        SECURITY_DESCRIPTOR sd;
+        SECURITY_DESCRIPTOR *lpSD = NULL;
+        if (InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION) &&
+            SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE))
+        {
+            lpSD = &sd;
+        }
+
+        SharedMem *pSharedMem = OpenSharedMemory(lpSD);
+        if (!pSharedMem) {
+            debugPrintf("error: failed to open shared memory\n");
+            return 1;
+        }
+
+        pSharedMem->cVerbosity = cVerbosity;
+
+        strncpy(pSharedMem->szDllName, szDll, _countof(pSharedMem->szDllName) - 1);
+        pSharedMem->szDllName[_countof(pSharedMem->szDllName) - 1] = '\0';
     }
 
     BOOL bAttachDwm = FALSE;
@@ -560,7 +672,7 @@ main(int argc, char *argv[])
                &startupInfo,
                &processInfo)) {
             DWORD dwLastError = GetLastError();
-            fprintf(stderr, "error: failed to execute %s (%lu)\n",
+            fprintf(stderr, "inject: error: failed to execute %s (%lu)\n",
                     commandLine.c_str(), dwLastError);
             if (dwLastError == ERROR_ELEVATION_REQUIRED) {
                 fprintf(stderr, "error: target program requires elevated priviledges and must be started from an Administrator Command Prompt, or UAC must be disabled\n");
@@ -571,32 +683,16 @@ main(int argc, char *argv[])
         hProcess = processInfo.hProcess;
     }
 
-    /*
-     * XXX: Mixed architecture don't quite work.  See also
-     * http://www.corsix.org/content/dll-injection-and-wow64
-     */
-    {
-        typedef BOOL (WINAPI *PFNISWOW64PROCESS)(HANDLE, PBOOL);
-        PFNISWOW64PROCESS pfnIsWow64Process;
-        pfnIsWow64Process = (PFNISWOW64PROCESS)
-            GetProcAddress(GetModuleHandleA("kernel32"), "IsWow64Process");
-        if (pfnIsWow64Process) {
-            BOOL isParentWow64 = FALSE;
-            BOOL isChildWow64 = FALSE;
-            if (pfnIsWow64Process(GetCurrentProcess(), &isParentWow64) &&
-                pfnIsWow64Process(hProcess, &isChildWow64) &&
-                isParentWow64 != isChildWow64) {
-                debugPrintf("error: binaries mismatch: you need to use the "
+    if (isDifferentArch(hProcess)) {
+        debugPrintf("error: binaries mismatch: you need to use the "
 #ifdef _WIN64
-                        "32-bits"
+                "32-bits"
 #else
-                        "64-bits"
+                "64-bits"
 #endif
-                        " apitrace binaries to trace this application\n");
-                TerminateProcess(hProcess, 1);
-                return 1;
-            }
-        }
+                " apitrace binaries to trace this application\n");
+        TerminateProcess(hProcess, 1);
+        return 1;
     }
 
     if (bAttachDwm && IsWindows8OrGreater()) {
@@ -615,12 +711,19 @@ main(int argc, char *argv[])
     strncat(szDllPath, szDllName, sizeof szDllPath - strlen(szDllPath) - 1);
 
     if (bDebug) {
-        attachDebugger(GetProcessId(hProcess));
+        if (!attachDebugger(GetProcessId(hProcess))) {
+            if (!bAttach) {
+                TerminateProcess(hProcess, 1);
+            }
+            return 1;
+        }
     }
 
 #if 1
     if (!injectDll(hProcess, szDllPath)) {
-        TerminateProcess(hProcess, 1);
+        if (!bAttach) {
+            TerminateProcess(hProcess, 1);
+        }
         return 1;
     }
 #endif
@@ -630,6 +733,11 @@ main(int argc, char *argv[])
     if (bAttach) {
         if (bAttachDwm) {
             restartDwmComposition(hProcess);
+        } else {
+            fprintf(stderr, "Press any key when finished tracing\n");
+            getchar();
+
+            ejectDll(hProcess, szDllPath);
         }
 
         if (dwThreadId) {

@@ -64,11 +64,11 @@ class EglTracer(GlTracer):
             print r'            EGLint api = EGL_OPENGL_ES_API;'
             print r'            _eglQueryContext(dpy, ctx, EGL_CONTEXT_CLIENT_TYPE, &api);'
             print r'            if (api == EGL_OPENGL_API) {'
-            print r'                assert(tr->profile.api == glprofile::API_GL);'
+            print r'                assert(tr->profile.api == glfeatures::API_GL);'
             print r'            } else if (api == EGL_OPENGL_ES_API) {'
             print r'                EGLint client_version = 1;'
             print r'                _eglQueryContext(dpy, ctx, EGL_CONTEXT_CLIENT_VERSION, &client_version);'
-            print r'                if (tr->profile.api != glprofile::API_GLES ||'
+            print r'                if (tr->profile.api != glfeatures::API_GLES ||'
             print r'                    tr->profile.major < client_version) {'
             print r'                    std::string version = tr->profile.str();'
             print r'                    os::log("apitrace: warning: eglMakeCurrent: expected OpenGL ES %i.x context, but got %s\n",'
@@ -195,11 +195,11 @@ void * dlopen(const char *filename, int flag)
 #if defined(ANDROID)
 
 /*
- * Undocumented Android extensions used by Dalvik which have bound information
- * passed to it, but is currently ignored, so probably unreliable.
+ * Undocumented Android extensions used by the wrappers which have bound
+ * information passed to it, but is currently ignored, so probably unreliable.
  *
  * See:
- * https://github.com/android/platform_frameworks_base/blob/master/opengl/libs/GLES_CM/gl.cpp
+ * https://github.com/android/platform_frameworks_base/search?q=glVertexPointerBounds
  */
 
 extern "C" PUBLIC

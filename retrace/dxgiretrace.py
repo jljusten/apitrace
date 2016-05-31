@@ -35,6 +35,7 @@ from specs.winapi import LPCSTR
 from specs.dxgi import dxgi
 from specs.d3d10 import d3d10, d3d10_1
 from specs.d3d11 import d3d11
+from specs.dcomp import dcomp
 
 
 class D3DRetracer(Retracer):
@@ -165,6 +166,16 @@ class D3DRetracer(Retracer):
         print r'        Software = NULL;'
         print r'    }'
 
+    def doInvokeInterfaceMethod(self, interface, method):
+        Retracer.doInvokeInterfaceMethod(self, interface, method)
+
+        # Keep retrying ID3D11VideoContext::DecoderBeginFrame when returns E_PENDING
+        if interface.name == 'ID3D11VideoContext' and method.name == 'DecoderBeginFrame':
+            print r'    while (_result == D3DERR_WASSTILLDRAWING || _result == E_PENDING) {'
+            print r'        Sleep(1);'
+            Retracer.doInvokeInterfaceMethod(self, interface, method)
+            print r'    }'
+
     def invokeInterfaceMethod(self, interface, method):
         # keep track of the last used device for state dumping
         if interface.name in ('ID3D10Device', 'ID3D10Device1'):
@@ -174,7 +185,7 @@ class D3DRetracer(Retracer):
                 print r'    }'
             else:
                 print r'    d3d10Dumper.bindDevice(_this);'
-        if interface.name in ('ID3D11DeviceContext', 'ID3D11DeviceContext1'):
+        if interface.name.startswith('ID3D11DeviceContext'):
             if method.name == 'Release':
                 print r'    if (call.ret->toUInt() == 0) {'
                 print r'        d3d11Dumper.unbindDevice(_this);'
@@ -194,11 +205,19 @@ class D3DRetracer(Retracer):
         # create windows as neccessary
         if method.name == 'CreateSwapChain':
             print r'    d3dretrace::createWindowForSwapChain(pDesc);'
+        if method.name == 'CreateSwapChainForHwnd':
+            print r'    WindowHandle = d3dretrace::createWindow(pDesc->Width, pDesc->Height);'
+            print r'    // DXGI_SCALING_NONE is only supported on Win8 and beyond'
+            print r'    if (pDesc->Scaling == DXGI_SCALING_NONE && !IsWindows8OrGreater()) {'
+            print r'        pDesc->Scaling = DXGI_SCALING_STRETCH;'
+            print r'    }'
         if method.name == 'CreateSwapChainForComposition':
             print r'    HWND hWnd = d3dretrace::createWindow(pDesc->Width, pDesc->Height);'
             print r'    _result = _this->CreateSwapChainForHwnd(pDevice, hWnd, pDesc, NULL, pRestrictToOutput, ppSwapChain);'
             self.checkResult(interface, method)
             return
+        if method.name == 'CreateTargetForHwnd':
+            print r'    hwnd = d3dretrace::createWindow(1024, 768);'
 
         if method.name == 'SetFullscreenState':
             print r'    if (retrace::forceWindowed) {'
@@ -207,8 +226,8 @@ class D3DRetracer(Retracer):
             print r'    }'
 
         # notify frame has been completed
-        if method.name == 'Present':
-            if interface.name == 'IDXGISwapChainDWM':
+        if interface.name.startswith('IDXGISwapChain') and method.name.startswith('Present'):
+            if interface.name.startswith('IDXGISwapChainDWM'):
                 print r'    com_ptr<IDXGISwapChain> pSwapChain;'
                 print r'    if (SUCCEEDED(_this->QueryInterface(IID_IDXGISwapChain, (void **) &pSwapChain))) {'
                 print r'        dxgiDumper.bindDevice(pSwapChain);'
@@ -255,77 +274,30 @@ class D3DRetracer(Retracer):
 
         if interface.name.startswith('ID3D10Device') and method.name.startswith('OpenSharedResource'):
             print r'    retrace::warning(call) << "replacing shared resource with checker pattern\n";'
-            print r'    D3D10_TEXTURE2D_DESC Desc;'
-            print r'    memset(&Desc, 0, sizeof Desc);'
-            print r'    Desc.Width = 8;'
-            print r'    Desc.Height = 8;'
-            print r'    Desc.MipLevels = 1;'
-            print r'    Desc.ArraySize = 1;'
-            print r'    Desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;'
-            print r'    Desc.SampleDesc.Count = 1;'
-            print r'    Desc.SampleDesc.Quality = 0;'
-            print r'    Desc.Usage = D3D10_USAGE_DEFAULT;'
-            print r'    Desc.BindFlags = D3D10_BIND_SHADER_RESOURCE | D3D10_BIND_RENDER_TARGET;'
-            print r'    Desc.CPUAccessFlags = 0x0;'
-            print r'    Desc.MiscFlags = 0 /* D3D10_RESOURCE_MISC_SHARED */;'
-            print r'''
-            static const DWORD Checker[8][8] = {
-               { 0U, ~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U },
-               {~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U,  0U },
-               { 0U, ~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U },
-               {~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U,  0U },
-               { 0U, ~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U },
-               {~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U,  0U },
-               { 0U, ~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U },
-               {~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U,  0U }
-            };
-            static const D3D10_SUBRESOURCE_DATA InitialData = {Checker, sizeof Checker[0], sizeof Checker};
-            '''
-            print r'    com_ptr<ID3D10Texture2D> pResource;'
-            print r'    _result = _this->CreateTexture2D(&Desc, &InitialData, &pResource);'
-            print r'    if (SUCCEEDED(_result)) {'
-            print r'         _result = pResource->QueryInterface(ReturnedInterface, ppResource);'
-            print r'    }'
+            print r'    _result = d3dretrace::createSharedResource(_this, ReturnedInterface, ppResource);'
             self.checkResult(interface, method)
+            return
+        if interface.name.startswith('ID3D11Device') and method.name == 'OpenSharedResource':
+            # Some applications (e.g., video playing in IE11) create shared resources within the same process.
+            # TODO: Generalize to other OpenSharedResource variants
+            print r'    retrace::map<HANDLE>::const_iterator it = _shared_handle_map.find(hResource);'
+            print r'    if (it == _shared_handle_map.end()) {'
+            print r'        retrace::warning(call) << "replacing shared resource with checker pattern\n";'
+            print r'        _result = d3dretrace::createSharedResource(_this, ReturnedInterface, ppResource);'
+            self.checkResult(interface, method)
+            print r'    } else {'
+            print r'        hResource = it->second;'
+            Retracer.invokeInterfaceMethod(self, interface, method)
+            print r'    }'
             return
         if interface.name.startswith('ID3D11Device') and method.name.startswith('OpenSharedResource'):
             print r'    retrace::warning(call) << "replacing shared resource with checker pattern\n";'
-            print
+            print r'    _result = d3dretrace::createSharedResource(_this, ReturnedInterface, ppResource);'
             if method.name == 'OpenSharedResourceByName':
                 print r'    (void)lpName;'
                 print r'    (void)dwDesiredAccess;'
-                print
-            print r'    D3D11_TEXTURE2D_DESC Desc;'
-            print r'    memset(&Desc, 0, sizeof Desc);'
-            print r'    Desc.Width = 8;'
-            print r'    Desc.Height = 8;'
-            print r'    Desc.MipLevels = 1;'
-            print r'    Desc.ArraySize = 1;'
-            print r'    Desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;'
-            print r'    Desc.SampleDesc.Count = 1;'
-            print r'    Desc.SampleDesc.Quality = 0;'
-            print r'    Desc.Usage = D3D11_USAGE_DEFAULT;'
-            print r'    Desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;'
-            print r'    Desc.CPUAccessFlags = 0x0;'
-            print r'    Desc.MiscFlags = 0 /* D3D11_RESOURCE_MISC_SHARED */;'
-            print r'''
-            static const DWORD Checker[8][8] = {
-               { 0U, ~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U },
-               {~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U,  0U },
-               { 0U, ~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U },
-               {~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U,  0U },
-               { 0U, ~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U },
-               {~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U,  0U },
-               { 0U, ~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U },
-               {~0U,  0U, ~0U,  0U, ~0U,  0U, ~0U,  0U }
-            };
-            static const D3D11_SUBRESOURCE_DATA InitialData = {Checker, sizeof Checker[0], sizeof Checker};
-            '''
-            print r'    com_ptr<ID3D11Texture2D> pResource;'
-            print r'    _result = _this->CreateTexture2D(&Desc, &InitialData, &pResource);'
-            print r'    if (SUCCEEDED(_result)) {'
-            print r'         _result = pResource->QueryInterface(ReturnedInterface, ppResource);'
-            print r'    }'
+            else:
+                print r'    (void)hResource;'
             self.checkResult(interface, method)
             return
 
@@ -356,8 +328,13 @@ class D3DRetracer(Retracer):
 
         Retracer.invokeInterfaceMethod(self, interface, method)
 
+        if method.name in ('AcquireSync', 'ReleaseSync'):
+            print r'    if (SUCCEEDED(_result) && _result != S_OK) {'
+            print r'        retrace::warning(call) << " returned " << _result << "\n";'
+            print r'    }'
+
         # process events after presents
-        if method.name == 'Present':
+        if interface.name.startswith('IDXGISwapChain') and method.name.startswith('Present'):
             print r'    d3dretrace::processEvents();'
 
         if method.name in ('Map', 'Unmap'):
@@ -376,10 +353,10 @@ class D3DRetracer(Retracer):
             print '    if (_MapDesc.Size) {'
             print '        _pbData = _MapDesc.pData;'
             if interface.name.startswith('ID3D11DeviceContext'):
-                # XXX: Unforunately this cause many false warnings on 1D and 2D
-                # resources, since the pitches are junk there...
-                #self.checkPitchMismatch(method)
-                pass
+                # Prevent false warnings on 1D and 2D resources, since the
+                # pitches are often junk there...
+                print '        _normalizeMap(pResource, pMappedResource);'
+                self.checkPitchMismatch(method)
             else:
                 print '        _pbData = _MapDesc.pData;'
                 self.checkPitchMismatch(method)
@@ -392,6 +369,19 @@ class D3DRetracer(Retracer):
             print '        retrace::delRegionByPointer(_pbData);'
             print '        _pbData = 0;'
             print '    }'
+
+        if interface.name.startswith('ID3D11VideoContext'):
+            if method.name == 'GetDecoderBuffer':
+                print '    if (*ppBuffer && *pBufferSize) {'
+                print '        g_Maps[nullptr][SubresourceKey(_this, Type)] = *ppBuffer;'
+                print '    }'
+            if method.name == 'ReleaseDecoderBuffer':
+                print '    SubresourceKey _mappingKey(_this, Type);'
+                print '    void *_pBuffer = g_Maps[nullptr][_mappingKey];'
+                print '    if (_pBuffer) {'
+                print '        retrace::delRegionByPointer(_pBuffer);'
+                print '        g_Maps[nullptr][_mappingKey] = 0;'
+                print '    }'
 
         # Attach shader byte code for lookup
         if 'pShaderBytecode' in method.argNames():
@@ -411,7 +401,9 @@ class D3DRetracer(Retracer):
             # Interpret argument as string
             Retracer.extractArg(self, function, arg, LPCSTR, lvalue, rvalue)
             print r'    assert(pData);'
-            print r'    assert(DataSize == strlen((const char *)pData));'
+            print r'    assert(DataSize >= strlen((const char *)pData));'
+            print r'    // Some applications include the trailing zero terminator in the data'
+            print r'    DataSize = strlen((const char *)pData);'
             return
 
         Retracer.extractArg(self, function, arg, arg_type, lvalue, rvalue)
@@ -433,6 +425,7 @@ def main():
     print r'#include "d3d10state.hpp"'
     print r'#include "d3d11imports.hpp"'
     print r'#include "d3d11size.hpp"'
+    print r'#include "dcompimports.hpp"'
     print r'#include "d3dstate.hpp"'
     print
     print '''static d3dretrace::D3DDumper<IDXGISwapChain> dxgiDumper;'''
@@ -445,6 +438,7 @@ def main():
     api.addModule(d3d10)
     api.addModule(d3d10_1)
     api.addModule(d3d11)
+    api.addModule(dcomp)
 
     retracer = D3DRetracer()
     retracer.retraceApi(api)

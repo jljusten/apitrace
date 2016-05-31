@@ -56,7 +56,7 @@ class StateWriter;
 namespace retrace {
 
 
-extern trace::Parser parser;
+extern trace::AbstractParser *parser;
 extern trace::Profiler profiler;
 
 
@@ -67,10 +67,16 @@ public:
      * Allocate an array with the same dimensions as the specified value.
      */
     inline void *
-    allocArray(const trace::Value *value, size_t size) {
+    allocArray(const trace::Value *value, size_t elemSize) {
         const trace::Array *array = value->toArray();
         if (array) {
-            return ::ScopedAllocator::alloc(array->size() * size);
+            size_t numElems = array->size();
+            size_t size = numElems * elemSize;
+            void *ptr = ::ScopedAllocator::alloc(size);
+            if (ptr) {
+                memset(ptr, 0, size);
+            }
+            return ptr;
         }
         const trace::Null *null = value->toNull();
         if (null) {
@@ -108,6 +114,11 @@ extern int verbosity;
 extern unsigned debug;
 
 /**
+ * Call no markers.
+ */
+extern bool markers;
+
+/**
  * Whether to force windowed. Recommeded, as there is no guarantee that the
  * original display mode is available.
  */
@@ -116,6 +127,15 @@ extern bool forceWindowed;
 /**
  * Add profiling data to the dump when retracing.
  */
+extern unsigned curPass;
+extern unsigned numPasses;
+extern bool profilingWithBackends;
+extern char* profilingCallsMetricsString;
+extern char* profilingFramesMetricsString;
+extern char* profilingDrawCallsMetricsString;
+extern bool profilingListMetrics;
+extern bool profilingNumPasses;
+
 extern bool profiling;
 extern bool profilingCpuTimes;
 extern bool profilingGpuTimes;

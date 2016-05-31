@@ -47,12 +47,14 @@
 
 #include <Cocoa/Cocoa.h>
 
-#include "os_thread.hpp"
 #include "glws.hpp"
 
 
 /**
  * Dummy thread to force Cocoa to enter multithreading mode.
+ *
+ * See also:
+ * - https://developer.apple.com/library/mac/documentation/Cocoa/Conceptual/MemoryMgmt/Articles/mmAutoreleasePools.html
  */
 @interface DummyThread : NSObject
     + (void)enterMultiThreaded;
@@ -75,8 +77,8 @@
 namespace glws {
 
 
-static OS_THREAD_SPECIFIC_PTR(NSAutoreleasePool)
-autoreleasePool;
+static __thread NSAutoreleasePool *
+autoreleasePool = nil;
 
 
 class CocoaVisual : public Visual
@@ -102,8 +104,8 @@ public:
     NSOpenGLView *view;
     NSOpenGLContext *currentContext;
 
-    CocoaDrawable(const Visual *vis, int w, int h, bool pbuffer) :
-        Drawable(vis, w, h, pbuffer),
+    CocoaDrawable(const Visual *vis, int w, int h, const pbuffer_info *info) :
+        Drawable(vis, w, h, info),
         currentContext(nil)
     {
         NSOpenGLPixelFormat *pixelFormat = static_cast<const CocoaVisual *>(visual)->pixelFormat;
@@ -126,11 +128,11 @@ public:
 
         [window setContentView:view];
         [window setTitle:@"glretrace"];
-
     }
 
     ~CocoaDrawable() {
-        [window release];
+        [view release];
+        [window close];
     }
 
     void
@@ -140,6 +142,8 @@ public:
         }
 
         [window setContentSize:NSMakeSize(w, h)];
+
+        processEvents();
 
         if (currentContext != nil) {
             [currentContext update];
@@ -210,7 +214,11 @@ init(void) {
 
     [NSApplication sharedApplication];
 
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+
     [NSApp finishLaunching];
+
+    [NSApp activateIgnoringOtherApps:YES];
 }
 
 
@@ -235,7 +243,7 @@ createVisual(bool doubleBuffer, unsigned samples, Profile profile) {
     attribs.add(NSOpenGLPFADepthSize, (NSOpenGLPixelFormatAttribute)1);
     attribs.add(NSOpenGLPFAStencilSize, (NSOpenGLPixelFormatAttribute)1);
 
-    if (profile.api != glprofile::API_GL) {
+    if (profile.api != glfeatures::API_GL) {
         return NULL;
     }
 
@@ -278,11 +286,12 @@ createVisual(bool doubleBuffer, unsigned samples, Profile profile) {
 }
 
 Drawable *
-createDrawable(const Visual *visual, int width, int height, bool pbuffer)
+createDrawable(const Visual *visual, int width, int height,
+               const pbuffer_info *info)
 {
     initThread();
 
-    return new CocoaDrawable(visual, width, height, pbuffer);
+    return new CocoaDrawable(visual, width, height, info);
 }
 
 Context *
@@ -307,7 +316,7 @@ createContext(const Visual *visual, Context *shareContext, bool debug)
 }
 
 bool
-makeCurrent(Drawable *drawable, Context *context)
+makeCurrentInternal(Drawable *drawable, Context *context)
 {
     initThread();
 
@@ -341,6 +350,27 @@ processEvents(void) {
             [NSApp sendEvent:event];
     } while (event);
 
+    return true;
+}
+
+bool
+bindTexImage(Drawable *pBuffer, int iBuffer) {
+    std::cerr << "error: Cocoa::wglBindTexImageARB not implemented.\n";
+    assert(pBuffer->pbuffer);
+    return true;
+}
+
+bool
+releaseTexImage(Drawable *pBuffer, int iBuffer) {
+    std::cerr << "error: Cocoa::wglReleaseTexImageARB not implemented.\n";
+    assert(pBuffer->pbuffer);
+    return true;
+}
+
+bool
+setPbufferAttrib(Drawable *pBuffer, const int *attribList) {
+    // nothing to do here.
+    assert(pBuffer->pbuffer);
     return true;
 }
 

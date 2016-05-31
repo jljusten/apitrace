@@ -34,6 +34,10 @@
 #include <iostream>
 #include <fstream>
 
+#ifndef __has_feature
+#  define __has_feature(x) 0
+#endif
+
 #include "os_string.hpp"
 #include "os_process.hpp"
 #include "os_version.hpp"
@@ -92,7 +96,7 @@ static int
 traceProgram(trace::API api,
              char * const *argv,
              const char *output,
-             bool verbose,
+             int verbose,
              bool debug)
 {
     const char *wrapperFilename;
@@ -155,6 +159,9 @@ traceProgram(trace::API api,
         if (debug) {
             args.push_back("-d");
         }
+        for (int i = 1; i < verbose; ++i) {
+            args.push_back("-v");
+        }
         args.push_back("-D");
         args.push_back(wrapperPath);
         args.push_back("--");
@@ -184,8 +191,16 @@ traceProgram(trace::API api,
 #if defined(TRACE_VARIABLE)
         const char *oldEnvVarValue = getenv(TRACE_VARIABLE);
         if (oldEnvVarValue) {
+#if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
+            /* Ensure libasan.so is preloaded first. */
+            os::String tmp = oldEnvVarValue;
+            tmp.append(OS_PATH_SEP);
+            tmp.append(wrapperPath);
+            wrapperPath = tmp;
+#else
             wrapperPath.append(OS_PATH_SEP);
             wrapperPath.append(oldEnvVarValue);
+#endif
         }
 
         std::string ex;
@@ -254,14 +269,14 @@ traceProgram(trace::API api,
 
         if (verbose) {
             const char *sep = "";
-            for (unsigned i = 0; i < args.size(); ++i) {
+            for (auto & arg : args) {
                 const char *quote;
-                if (strchr(args[i], ' ') != NULL) {
+                if (strchr(arg, ' ') != NULL) {
                     quote = "\"";
                 } else {
                     quote = "";
                 }
-                std::cerr << sep << quote << args[i] << quote;
+                std::cerr << sep << quote << arg << quote;
                 sep = " ";
             }
             std::cerr << "\n";
@@ -345,7 +360,7 @@ longOptions[] = {
 static int
 command(int argc, char *argv[])
 {
-    bool verbose = false;
+    int verbose = 0;
     trace::API api = trace::API_GL;
     const char *output = NULL;
     bool debug = false;
@@ -357,14 +372,16 @@ command(int argc, char *argv[])
             usage();
             return 0;
         case 'v':
-            verbose = true;
+            ++verbose;
             break;
         case 'a':
             if (strcmp(optarg, "gl") == 0) {
                 api = trace::API_GL;
             } else if (strcmp(optarg, "egl") == 0) {
                 api = trace::API_EGL;
-            } else if (strcmp(optarg, "d3d7") == 0) {
+            } else if (strcmp(optarg, "ddraw") == 0 ||
+                       strcmp(optarg, "d3d6") == 0 ||
+                       strcmp(optarg, "d3d7") == 0) {
                 api = trace::API_D3D7;
             } else if (strcmp(optarg, "d3d8") == 0) {
                 api = trace::API_D3D8;

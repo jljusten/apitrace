@@ -23,7 +23,8 @@
 #include "ui_profilereplaydialog.h"
 #include "vertexdatainterpreter.h"
 #include "trace_profiler.hpp"
-#include "image/image.hpp"
+#include "image.hpp"
+#include "leaktracethread.h"
 
 #include <QAction>
 #include <QApplication>
@@ -39,8 +40,7 @@
 #include <QToolBar>
 #include <QUrl>
 #include <QVBoxLayout>
-#include <QWebPage>
-#include <QWebView>
+#include <QTextBrowser>
 
 typedef QLatin1String _;
 
@@ -114,6 +114,15 @@ void MainWindow::saveTrace()
                 tr("Trace Files (*.trace);;All Files (*)"));
 
     if (!fileName.isEmpty()) {
+        // copy won't overwrite existing files!
+        if (QFile::exists(fileName)) {
+            if (!QFile::remove(fileName)) {
+                QMessageBox::warning(
+                    this, tr("Could not overwrite file"),
+                    tr("The existing file %0 could not be replaced!")
+                        .arg(fileName));
+            }
+        }
         QFile::copy(localFile, fileName);
     }
 }
@@ -396,6 +405,15 @@ void MainWindow::replayError(const QString &message)
         tr("Replaying unsuccessful."), 2000);
     QMessageBox::warning(
         this, tr("Replay Failed"), message);
+}
+
+void MainWindow::loadError(const QString &message)
+{
+    m_progressBar->hide();
+    statusBar()->showMessage(
+        tr("Load unsuccessful."), 2000);
+    QMessageBox::warning(
+        this, tr("Load Failed"), message);
 }
 
 void MainWindow::startedLoadingTrace()
@@ -735,9 +753,10 @@ variantToItem(const QString &key, const QVariant &var,
 static void addSurfaceItem(const ApiSurface &surface,
                            const QString &label,
                            QTreeWidgetItem *parent,
-                           QTreeWidget *tree)
+                           QTreeWidget *tree,
+                           bool opaque, bool alpha)
 {
-    QIcon icon(QPixmap::fromImage(surface.thumb()));
+    QIcon icon(QPixmap::fromImage(surface.calculateThumbnail(opaque, alpha)));
     QTreeWidgetItem *item = new QTreeWidgetItem(parent);
     item->setIcon(0, icon);
 
@@ -764,6 +783,148 @@ static void addSurfaceItem(const ApiSurface &surface,
     tree->setItemWidget(item, 1, l);
 
     item->setData(0, Qt::UserRole, surface.data());
+}
+
+void MainWindow::addSurface(const ApiTexture &image, QTreeWidgetItem *parent) {
+    addSurface(image, image.label(), parent);
+}
+
+void MainWindow::addSurface(const ApiFramebuffer &fbo, QTreeWidgetItem *parent) {
+    addSurface(fbo, fbo.type(), parent);
+}
+
+void MainWindow::addSurface(const ApiSurface &surface, const QString &label,
+                            QTreeWidgetItem *parent)
+{
+    addSurfaceItem(surface, label, parent,
+                   m_ui.surfacesTreeWidget, m_ui.surfacesOpaqueCB->isChecked(),
+                   m_ui.surfacesAlphaCB->isChecked());
+}
+
+template <typename Surface>
+void MainWindow::addSurfaces(const QList<Surface> &surfaces, const char *label) {
+    if (!surfaces.isEmpty()) {
+        QTreeWidgetItem *imageItem = new QTreeWidgetItem(m_ui.surfacesTreeWidget);
+        imageItem->setText(0, tr(label));
+        if (surfaces.count() <= 6) {
+            imageItem->setExpanded(true);
+        }
+        for (int i = 0; i < surfaces.count(); ++i) {
+            addSurface(surfaces[i], imageItem);
+        }
+    }
+}
+
+QStringList shortenReferencingShaderNames(QStringList referencingShaders)
+{
+    static QMap<QString, QString> map = {
+        {"GL_REFERENCED_BY_VERTEX_SHADER", "VS"},
+        {"GL_REFERENCED_BY_TESS_CONTROL_SHADER", "TCS"},
+        {"GL_REFERENCED_BY_TESS_EVALUATION_SHADER", "TES"},
+        {"GL_REFERENCED_BY_GEOMETRY_SHADER", "GS"},
+        {"GL_REFERENCED_BY_FRAGMENT_SHADER", "FS"},
+        {"GL_REFERENCED_BY_COMPUTE_SHADER", "CS"}};
+    for (auto &referencingShader : referencingShaders) {
+        assert(map.count(referencingShader));
+        referencingShader = map[referencingShader];
+    }
+    return referencingShaders;
+}
+
+QStringList getReferencingShaders(QTreeWidgetItem *bufferItem)
+{
+    QStringList referencingShaders;
+    for (int i = 0; i < bufferItem->childCount(); ++i) {
+        const auto &text = bufferItem->child(i)->text(0);
+        if (text.startsWith("GL_REFERENCED_BY_") && text.endsWith("_SHADER")) {
+            referencingShaders.append(text);
+        }
+    }
+    return referencingShaders;
+}
+
+void setValueOfSSBBItem(const ApiTraceState &state, QTreeWidgetItem *bufferItem)
+{
+    assert(bufferItem);
+    const auto &bufferBindingItem = bufferItem->child(0);
+    assert(bufferBindingItem->text(0) == "GL_BUFFER_BINDING");
+    const int bufferBindingIndex = bufferBindingItem->text(1).toInt();
+    qDebug() << bufferBindingIndex;
+    assert(state.parameters().count("GL_SHADER_STORAGE_BUFFER"));
+    assert(state.parameters()["GL_SHADER_STORAGE_BUFFER"].toMap().count("i"));
+    assert(bufferBindingIndex < state.parameters()["GL_SHADER_STORAGE_BUFFER"]
+                                    .toMap()["i"]
+                                    .toList()
+                                    .size());
+    const auto &SSB = state.parameters()["GL_SHADER_STORAGE_BUFFER"]
+                          .toMap()["i"]
+                          .toList()[bufferBindingIndex]
+                          .toMap();
+
+    assert(SSB.count("GL_SHADER_STORAGE_BUFFER_START"));
+    auto start = SSB["GL_SHADER_STORAGE_BUFFER_START"].toInt();
+
+    assert(SSB.count("GL_SHADER_STORAGE_BUFFER_SIZE"));
+    auto size = SSB["GL_SHADER_STORAGE_BUFFER_SIZE"].toInt();
+
+    assert(SSB.count("GL_SHADER_STORAGE_BUFFER_BINDING"));
+    auto bufferName = SSB["GL_SHADER_STORAGE_BUFFER_BINDING"].toInt();
+
+    // Build overview text like:
+    // "Binding 1 in VS, FS; Buffer 16 (6 Bytes starting at 2)"
+    QString bindingText = QString("Binding %0").arg(bufferBindingIndex);
+
+    QStringList referencingShaders =
+        shortenReferencingShaderNames(getReferencingShaders(bufferItem));
+    if (!referencingShaders.empty()) {
+        bindingText += " in ";
+        bindingText += referencingShaders.join(", ");
+    }
+
+    QString bufferText;
+    if (bufferName != 0) {
+        bufferText = QString("Buffer %0").arg(bufferName);
+        if (size != 0) {
+            if (start != 0) {
+                bufferText +=
+                    QString(" (%0 Bytes starting at %1)").arg(size).arg(start);
+            } else {
+                bufferText += QString(" (first %0 Bytes)").arg(size);
+            }
+        } else {
+            if (start != 0) {
+                bufferText += QString(" (starting at offset %0)").arg(start);
+            }
+        }
+    }
+    if (bufferText.isEmpty()) {
+        bufferItem->setText(1, bindingText);
+    } else {
+        bufferItem->setText(1, bindingText + "; " + bufferText);
+    }
+}
+
+void MainWindow::updateSurfacesView()
+{
+    updateSurfacesView(*m_selectedEvent->state());
+}
+
+void MainWindow::updateSurfacesView(const ApiTraceState &state)
+{
+    const QList<ApiTexture> &textures =
+        state.textures();
+    const QList<ApiFramebuffer> &fbos =
+        state.framebuffers();
+
+    m_ui.surfacesTreeWidget->clear();
+    if (textures.isEmpty() && fbos.isEmpty()) {
+        m_ui.surfacesTab->setDisabled(false);
+    } else {
+        m_ui.surfacesTreeWidget->setIconSize(QSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE));
+        addSurfaces(textures, "Textures");
+        addSurfaces(fbos, "Framebuffers");
+        m_ui.surfacesTab->setEnabled(true);
+    }
 }
 
 void MainWindow::fillStateForFrame()
@@ -808,51 +969,21 @@ void MainWindow::fillStateForFrame()
     variantMapToItems(state.buffers(), QVariantMap(), buffersItems);
     m_ui.buffersTreeWidget->insertTopLevelItems(0, buffersItems);
 
-    const QList<ApiTexture> &textures =
-        state.textures();
-    const QList<ApiFramebuffer> &fbos =
-        state.framebuffers();
-
-    m_ui.surfacesTreeWidget->clear();
-    if (textures.isEmpty() && fbos.isEmpty()) {
-        m_ui.surfacesTab->setDisabled(false);
-    } else {
-        m_ui.surfacesTreeWidget->setIconSize(QSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE));
-        if (!textures.isEmpty()) {
-            QTreeWidgetItem *textureItem =
-                new QTreeWidgetItem(m_ui.surfacesTreeWidget);
-            textureItem->setText(0, tr("Textures"));
-            if (textures.count() <= 6) {
-                textureItem->setExpanded(true);
-            }
-
-            for (int i = 0; i < textures.count(); ++i) {
-                const ApiTexture &texture =
-                    textures[i];
-                addSurfaceItem(texture, texture.label(),
-                               textureItem,
-                               m_ui.surfacesTreeWidget);
-            }
-        }
-        if (!fbos.isEmpty()) {
-            QTreeWidgetItem *fboItem =
-                new QTreeWidgetItem(m_ui.surfacesTreeWidget);
-            fboItem->setText(0, tr("Framebuffers"));
-            if (fbos.count() <= 6) {
-                fboItem->setExpanded(true);
-            }
-
-            for (int i = 0; i < fbos.count(); ++i) {
-                const ApiFramebuffer &fbo =
-                    fbos[i];
-                addSurfaceItem(fbo, fbo.type(),
-                               fboItem,
-                               m_ui.surfacesTreeWidget);
-            }
-        }
-        m_ui.surfacesTab->setEnabled(true);
-    }
+    updateSurfacesView(state);
     m_ui.stateDock->show();
+
+    {
+        m_ui.ssbsTreeWidget->clear();
+        QList<QTreeWidgetItem *> buffersItems;
+        variantMapToItems(state.shaderStorageBufferBlocks(), QVariantMap(),
+                          buffersItems);
+        const bool hasSSBs = buffersItems.size() > 0;
+        for (auto const &bufferItem : buffersItems) {
+            setValueOfSSBBItem(state, bufferItem);
+        }
+        m_ui.ssbsTreeWidget->insertTopLevelItems(0, buffersItems);
+        m_ui.ssbTab->setEnabled(hasSSBs);
+    }
 }
 
 void MainWindow::showSettings()
@@ -863,9 +994,25 @@ void MainWindow::showSettings()
     dialog.exec();
 }
 
-void MainWindow::openHelp(const QUrl &url)
+void MainWindow::leakTrace()
 {
-    QDesktopServices::openUrl(url);
+    LeakTraceThread *t=new LeakTraceThread(m_trace->fileName());
+
+    connect (t,SIGNAL(finished()),this,SLOT(leakTraceFinished()));
+
+    connect (t,SIGNAL(leakTraceErrors(const QList<ApiTraceError> &)),
+            this,SLOT(slotRetraceErrors(const QList<ApiTraceError>&)));
+
+    t->start();
+}
+
+void MainWindow::leakTraceFinished(){
+
+    LeakTraceThread *t = qobject_cast<LeakTraceThread*>(sender());
+
+    m_ui.errorsDock->setVisible(t->hasError());
+
+    delete t;
 }
 
 void MainWindow::showSurfacesMenu(const QPoint &pos)
@@ -904,7 +1051,9 @@ void MainWindow::showSelectedSurface()
         return;
     }
 
-    ImageViewer *viewer = new ImageViewer(this);
+    ImageViewer *viewer =
+        new ImageViewer(this, m_ui.surfacesOpaqueCB->isChecked(),
+                        m_ui.surfacesAlphaCB->isChecked());
 
     QString title;
     if (selectedCall()) {
@@ -982,9 +1131,6 @@ void MainWindow::initObjects()
 
     m_ui.surfacesTreeWidget->setContextMenuPolicy(Qt::CustomContextMenu);
 
-    m_ui.detailsWebView->page()->setLinkDelegationPolicy(
-        QWebPage::DelegateExternalLinks);
-
     m_jumpWidget = new JumpWidget(this);
     m_ui.centralLayout->addWidget(m_jumpWidget);
     m_jumpWidget->hide();
@@ -1001,6 +1147,8 @@ void MainWindow::initObjects()
 
 void MainWindow::initConnections()
 {
+    connect(m_trace, SIGNAL(problemLoadingTrace(const QString&)),
+            this, SLOT(loadError(const QString&)));
     connect(m_trace, SIGNAL(startedLoadingTrace()),
             this, SLOT(startedLoadingTrace()));
     connect(m_trace, SIGNAL(loaded(int)),
@@ -1079,6 +1227,8 @@ void MainWindow::initConnections()
             this, SLOT(showThumbnails()));
     connect(m_ui.actionOptions, SIGNAL(triggered()),
             this, SLOT(showSettings()));
+    connect(m_ui.actionLeakTrace,SIGNAL(triggered()),
+            this, SLOT(leakTrace()));
 
     connect(m_ui.callView->selectionModel(), SIGNAL(currentChanged(const QModelIndex &, const QModelIndex &)),
             this, SLOT(callItemSelected(const QModelIndex &)));
@@ -1093,9 +1243,6 @@ void MainWindow::initConnections()
     connect(m_ui.surfacesTreeWidget,
             SIGNAL(itemDoubleClicked(QTreeWidgetItem *, int)),
             SLOT(showSelectedSurface()));
-
-    connect(m_ui.detailsWebView, SIGNAL(linkClicked(const QUrl&)),
-            this, SLOT(openHelp(const QUrl&)));
 
     connect(m_ui.nonDefaultsCB, SIGNAL(toggled(bool)),
             this, SLOT(fillState(bool)));
@@ -1132,6 +1279,11 @@ void MainWindow::initConnections()
             m_profileDialog, SLOT(show()));
     connect(m_profileDialog, SIGNAL(jumpToCall(int)),
             this, SLOT(slotJumpTo(int)));
+
+    connect(m_ui.surfacesOpaqueCB, SIGNAL(stateChanged(int)), this,
+            SLOT(updateSurfacesView()));
+    connect(m_ui.surfacesAlphaCB, SIGNAL(stateChanged(int)), this,
+            SLOT(updateSurfacesView()));
 }
 
 void MainWindow::initRetraceConnections()

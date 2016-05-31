@@ -141,8 +141,13 @@ void setContext(uintptr_t context_id)
     ts->current_context = ctx;
 
     if (!ctx->bound) {
-        ctx->profile = glprofile::getCurrentContextProfile();
+        ctx->profile = glfeatures::getCurrentContextProfile();
+        ctx->extensions.getCurrentContextExtensions(ctx->profile);
+        ctx->features.load(ctx->profile, ctx->extensions);
+        ctx->bound = true;
+    }
 
+    if (!ctx->boundDrawable) {
         /*
          * The default viewport and scissor state is set when a context is
          * first made current, with values matching the bound drawable.  Many
@@ -165,9 +170,9 @@ void setContext(uintptr_t context_id)
          * we might be called before both are set, so ignore empty boxes.
          */
         if (viewport[2] && viewport[3] && scissor[2] && scissor[3]) {
-            glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-            glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
-            ctx->bound = true;
+            _fake_glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+            _fake_glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
+            ctx->boundDrawable = true;
         }
     }
 }

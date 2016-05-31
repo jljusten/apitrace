@@ -25,6 +25,7 @@
 
 
 #include <assert.h>
+#include <stdlib.h>
 
 #include <iostream>
 
@@ -73,13 +74,37 @@ Drawable::copySubBuffer(int x, int y, int width, int height) {
 }
 
 
-bool
-Context::hasExtension(const char *string) {
-    if (extensions.strings.empty()) {
-        extensions.getCurrentContextExtensions(profile);
+void
+Context::initialize(void)
+{
+    assert(!initialized);
+
+    actualProfile = glfeatures::getCurrentContextProfile();
+    actualExtensions.getCurrentContextExtensions(actualProfile);
+    actualFeatures.load(actualProfile, actualExtensions);
+
+    /* Ensure we got a matching profile.
+     *
+     * In particular on MacOSX, there is no way to specify specific versions, so this is all we can do.
+     *
+     * Also, see if OpenGL ES can be handled through ARB_ES*_compatibility.
+     */
+    glfeatures::Profile expectedProfile = profile;
+    if (!actualProfile.matches(expectedProfile)) {
+        if (expectedProfile.api == glfeatures::API_GLES &&
+            actualProfile.api == glfeatures::API_GL &&
+            ((expectedProfile.major == 2 && actualExtensions.has("GL_ARB_ES2_compatibility")) ||
+             (expectedProfile.major == 3 && actualExtensions.has("GL_ARB_ES3_compatibility")))) {
+            std::cerr << "warning: context mismatch:"
+                      << " expected " << expectedProfile << ","
+                      << " but got " << actualProfile << " with GL_ARB_ES" << expectedProfile.major << "_compatibility\n";
+        } else {
+            std::cerr << "error: context mismatch: expected " << expectedProfile << ", but got " << actualProfile << "\n";
+            exit(1);
+        }
     }
 
-    return extensions.has(string);
+    initialized = true;
 }
 
 

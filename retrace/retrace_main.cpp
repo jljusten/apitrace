@@ -28,6 +28,7 @@
 
 #include <string.h>
 #include <limits.h> // for CHAR_MAX
+#include <memory> // for unique_ptr
 #include <iostream>
 #include <getopt.h>
 #ifndef _WIN32
@@ -35,18 +36,20 @@
 #endif
 
 #include "os_binary.hpp"
+#include "os_crtdbg.hpp"
 #include "os_time.hpp"
 #include "os_thread.hpp"
 #include "image.hpp"
+#include "threaded_snapshot.hpp"
 #include "trace_callset.hpp"
 #include "trace_dump.hpp"
 #include "trace_option.hpp"
 #include "retrace.hpp"
 #include "state_writer.hpp"
+#include "ws.hpp"
 
 
 static bool waitOnFinish = false;
-static int loopCount = 0;
 
 static const char *snapshotPrefix = "";
 static enum {
@@ -57,7 +60,6 @@ static enum {
 
 static trace::CallSet snapshotFrequency;
 static unsigned snapshotInterval = 0;
-static trace::ParseBookmark lastFrameStart;
 
 static unsigned dumpStateCallNo = ~0;
 
@@ -67,12 +69,13 @@ retrace::Retracer retracer;
 namespace retrace {
 
 
-trace::Parser parser;
+trace::AbstractParser *parser;
 trace::Profiler profiler;
 
 
 int verbosity = 0;
 unsigned debug = 1;
+bool markers = false;
 bool forceWindowed = true;
 bool dumpingState = false;
 bool dumpingSnapshots = false;
@@ -82,6 +85,15 @@ const char *driverModule = NULL;
 
 bool doubleBuffer = true;
 unsigned samples = 1;
+
+unsigned curPass = 0;
+unsigned numPasses = 1;
+bool profilingWithBackends = false;
+char* profilingCallsMetricsString;
+char* profilingFramesMetricsString;
+char* profilingDrawCallsMetricsString;
+bool profilingListMetrics = false;
+bool profilingNumPasses = false;
 
 bool profiling = false;
 bool profilingGpuTimes = false;
@@ -111,22 +123,21 @@ frameComplete(trace::Call &call) {
     }
 }
 
-
 class DefaultDumper: public Dumper
 {
 public:
     image::Image *
-    getSnapshot(void) {
+    getSnapshot(void) override {
         return NULL;
     }
 
     bool
-    canDump(void) {
+    canDump(void) override {
         return false;
     }
 
     void
-    dumpState(StateWriter &writer) {
+    dumpState(StateWriter &writer) override {
         assert(0);
     }
 };
@@ -141,6 +152,9 @@ typedef StateWriter *(*StateWriterFactory)(std::ostream &);
 static StateWriterFactory stateWriterFactory = createJSONStateWriter;
 
 
+static Snapshotter *snapshotter;
+
+
 /**
  * Take snapshots.
  */
@@ -151,7 +165,7 @@ takeSnapshot(unsigned call_no) {
     assert(dumpingSnapshots);
     assert(snapshotPrefix);
 
-    image::Image *src = dumper->getSnapshot();
+    std::unique_ptr<image::Image> src(dumper->getSnapshot());
     if (!src) {
         std::cerr << call_no << ": warning: failed to get snapshot\n";
         return;
@@ -183,18 +197,11 @@ takeSnapshot(unsigned call_no) {
                                                      snapshotPrefix,
                                                      useCallNos ? call_no : snapshot_no);
 
-            // Alpha channel often has bogus data, so strip it when writing
-            // PNG images to disk to simplify visualization.
-            bool strip_alpha = true;
-
-            if (src->writePNG(filename, strip_alpha) &&
-                retrace::verbosity >= 0) {
-                std::cout << "Wrote " << filename << "\n";
-            }
+            // Here we release our ownership on the Image, it is now the
+            // responsibility of the snapshotter to delete it.
+            snapshotter->writePNG(filename, src.release());
         }
     }
-
-    delete src;
 
     snapshot_no++;
 
@@ -379,33 +386,13 @@ public:
 
         /* Consume successive calls for this thread. */
         do {
-            bool callEndsFrame = false;
-            static trace::ParseBookmark frameStart;
 
             assert(call);
             assert(call->thread_id == leg);
 
-            if (loopCount && call->flags & trace::CALL_FLAG_END_FRAME) {
-                callEndsFrame = true;
-                parser.getBookmark(frameStart);
-            }
-
             retraceCall(call);
             delete call;
-            call = parser.parse_call();
-
-            /* Restart last frame if looping is requested. */
-            if (loopCount) {
-                if (!call) {
-                    parser.setBookmark(lastFrameStart);
-                    call = parser.parse_call();
-                    if (loopCount > 0) {
-                        --loopCount;
-                    }
-                } else if (callEndsFrame) {
-                    lastFrameStart = frameStart;
-                }
-            }
+            call = parser->parse_call();
 
         } while (call && call->thread_id == leg);
 
@@ -507,18 +494,10 @@ RelayRace::getRunner(unsigned leg) {
 void
 RelayRace::run(void) {
     trace::Call *call;
-    call = parser.parse_call();
+    call = parser->parse_call();
     if (!call) {
         /* Nothing to do */
         return;
-    }
-
-    /* If the user wants to loop we need to get a bookmark target. We
-     * usually get this after replaying a call that ends a frame, but
-     * for a trace that has only one frame we need to get it at the
-     * beginning. */
-    if (loopCount) {
-        parser.getBookmark(lastFrameStart);
     }
 
     RelayRunner *foreRunner = getForeRunner();
@@ -584,10 +563,10 @@ mainLoop() {
 
     if (singleThread) {
         trace::Call *call;
-        while ((call = parser.parse_call())) {
+        while ((call = parser->parse_call())) {
             retraceCall(call);
             delete call;
-        };
+        }
     } else {
         RelayRace race;
         race.run();
@@ -623,21 +602,29 @@ usage(const char *argv0) {
         "\n"
         "  -b, --benchmark         benchmark mode (no error checking or warning messages)\n"
         "  -d, --debug             increase debugging checks\n"
+        "      --markers           insert call no markers in the command stream\n"
         "      --pcpu              cpu profiling (cpu times per call)\n"
         "      --pgpu              gpu profiling (gpu times per draw call)\n"
         "      --ppd               pixels drawn profiling (pixels drawn per draw call)\n"
         "      --pmem              memory usage profiling (vsize rss per call)\n"
+        "      --pcalls            call profiling metrics selection\n"
+        "      --pframes           frame profiling metrics selection\n"
+        "      --pdrawcalls        draw call profiling metrics selection\n"
+        "      --list-metrics      list all available metrics for TRACE\n"
+        "      --gen-passes        generate profiling passes and output passes number\n"
         "      --call-nos[=BOOL]   use call numbers in snapshot filenames\n"
         "      --core              use core profile\n"
         "      --db                use a double buffer visual (default)\n"
         "      --samples=N         use GL_ARB_multisample (default is 1)\n"
         "      --driver=DRIVER     force driver type (`hw`, `sw`, `ref`, `null`, or driver module name)\n"
         "      --fullscreen        allow fullscreen\n"
+        "      --headless          don't show windows\n"
         "      --sb                use a single buffer visual\n"
         "  -s, --snapshot-prefix=PREFIX    take snapshots; `-` for PNM stdout output\n"
         "      --snapshot-format=FMT       use (PNM, RGB, or MD5; default is PNM) when writing to stdout output\n"
         "  -S, --snapshot=CALLSET  calls to snapshot (default is every frame)\n"
         "      --snapshot-interval=N    specify a frame interval when generating snaphots (default is 0)\n"
+        "  -t, --snapshot-threaded encode screenshots on multiple threads\n"
         "  -v, --verbose           increase output verbosity\n"
         "  -D, --dump-state=CALL   dump state at specific call no\n"
         "      --dump-format=FORMAT dump state format (`json` or `ubjson`)\n"
@@ -653,25 +640,33 @@ enum {
     SAMPLES_OPT,
     DRIVER_OPT,
     FULLSCREEN_OPT,
+    HEADLESS_OPT,
     PCPU_OPT,
     PGPU_OPT,
     PPD_OPT,
     PMEM_OPT,
+    PCALLS_OPT,
+    PFRAMES_OPT,
+    PDRAWCALLS_OPT,
+    PLMETRICS_OPT,
+    GENPASS_OPT,
     SB_OPT,
     SNAPSHOT_FORMAT_OPT,
     LOOP_OPT,
     SINGLETHREAD_OPT,
     SNAPSHOT_INTERVAL_OPT,
     DUMP_FORMAT_OPT,
+    MARKERS_OPT
 };
 
 const static char *
-shortOptions = "bdD:hs:S:vw";
+shortOptions = "bdD:hs:S:vwt";
 
 const static struct option
 longOptions[] = {
     {"benchmark", no_argument, 0, 'b'},
     {"debug", no_argument, 0, 'd'},
+    {"markers", no_argument, 0, MARKERS_OPT},
     {"call-nos", optional_argument, 0, CALL_NOS_OPT },
     {"core", no_argument, 0, CORE_OPT},
     {"db", no_argument, 0, DB_OPT},
@@ -680,16 +675,23 @@ longOptions[] = {
     {"dump-state", required_argument, 0, 'D'},
     {"dump-format", required_argument, 0, DUMP_FORMAT_OPT},
     {"fullscreen", no_argument, 0, FULLSCREEN_OPT},
+    {"headless", no_argument, 0, HEADLESS_OPT},
     {"help", no_argument, 0, 'h'},
     {"pcpu", no_argument, 0, PCPU_OPT},
     {"pgpu", no_argument, 0, PGPU_OPT},
     {"ppd", no_argument, 0, PPD_OPT},
     {"pmem", no_argument, 0, PMEM_OPT},
+    {"pcalls", required_argument, 0, PCALLS_OPT},
+    {"pframes", required_argument, 0, PFRAMES_OPT},
+    {"pdrawcalls", required_argument, 0, PDRAWCALLS_OPT},
+    {"list-metrics", no_argument, 0, PLMETRICS_OPT},
+    {"gen-passes", no_argument, 0, GENPASS_OPT},
     {"sb", no_argument, 0, SB_OPT},
     {"snapshot-prefix", required_argument, 0, 's'},
     {"snapshot-format", required_argument, 0, SNAPSHOT_FORMAT_OPT},
     {"snapshot", required_argument, 0, 'S'},
     {"snapshot-interval", required_argument, 0, SNAPSHOT_INTERVAL_OPT},
+    {"snapshot-threaded", no_argument, 0, 't'},
     {"verbose", no_argument, 0, 'v'},
     {"wait", no_argument, 0, 'w'},
     {"loop", optional_argument, 0, LOOP_OPT},
@@ -708,7 +710,11 @@ extern "C"
 int main(int argc, char **argv)
 {
     using namespace retrace;
+    int loopCount = 0;
     int i;
+    bool snapshotThreaded = false;
+
+    os::setDebugOutput(os::OUTPUT_STDERR);
 
     assert(snapshotFrequency.empty());
 
@@ -721,6 +727,9 @@ int main(int argc, char **argv)
         case 'b':
             retrace::debug = 0;
             retrace::verbosity = -1;
+            break;
+        case MARKERS_OPT:
+            retrace::markers = true;
             break;
         case 'd':
             ++retrace::debug;
@@ -769,6 +778,9 @@ int main(int argc, char **argv)
             break;
         case FULLSCREEN_OPT:
             retrace::forceWindowed = false;
+            break;
+        case HEADLESS_OPT:
+            ws::headless = true;
             break;
         case SB_OPT:
             retrace::doubleBuffer = false;
@@ -819,6 +831,9 @@ int main(int argc, char **argv)
         case SNAPSHOT_INTERVAL_OPT:
             snapshotInterval = atoi(optarg);
             break;
+        case 't':
+            snapshotThreaded = true;
+            break;
         case 'v':
             ++retrace::verbosity;
             break;
@@ -856,6 +871,41 @@ int main(int argc, char **argv)
 
             retrace::profilingMemoryUsage = true;
             break;
+        case PCALLS_OPT:
+            retrace::debug = 0;
+            retrace::profiling = true;
+            retrace::verbosity = -1;
+            retrace::profilingWithBackends = true;
+            retrace::profilingCallsMetricsString = optarg;
+            break;
+        case PFRAMES_OPT:
+            retrace::debug = 0;
+            retrace::profiling = true;
+            retrace::verbosity = -1;
+            retrace::profilingWithBackends = true;
+            retrace::profilingFramesMetricsString = optarg;
+            break;
+        case PDRAWCALLS_OPT:
+            retrace::debug = 0;
+            retrace::profiling = true;
+            retrace::verbosity = -1;
+            retrace::profilingWithBackends = true;
+            retrace::profilingDrawCallsMetricsString = optarg;
+            break;
+        case PLMETRICS_OPT:
+            retrace::debug = 0;
+            retrace::profiling = true;
+            retrace::verbosity = -1;
+            retrace::profilingWithBackends = true;
+            retrace::profilingListMetrics = true;
+            break;
+        case GENPASS_OPT:
+            retrace::debug = 0;
+            retrace::profiling = true;
+            retrace::verbosity = -1;
+            retrace::profilingWithBackends = true;
+            retrace::profilingNumPasses = true;
+            break;
         default:
             std::cerr << "error: unknown option " << opt << "\n";
             usage(argv[0]);
@@ -879,24 +929,44 @@ int main(int argc, char **argv)
     }
 #endif
 
+    if (snapshotThreaded) {
+        snapshotter = new ThreadedSnapshotter(os::thread::hardware_concurrency());
+    } else {
+        snapshotter = new Snapshotter();
+    }
+
     retrace::setUp();
-    if (retrace::profiling) {
+    if (retrace::profiling && !retrace::profilingWithBackends) {
         retrace::profiler.setup(retrace::profilingCpuTimes, retrace::profilingGpuTimes, retrace::profilingPixelsDrawn, retrace::profilingMemoryUsage);
     }
 
     os::setExceptionCallback(exceptionCallback);
 
-    for (i = optind; i < argc; ++i) {
-        if (!retrace::parser.open(argv[i])) {
-            return 1;
+    for (retrace::curPass = 0; retrace::curPass < retrace::numPasses;
+         retrace::curPass++)
+    {
+        for (i = optind; i < argc; ++i) {
+            parser = new trace::Parser;
+            if (loopCount) {
+                parser = lastFrameLoopParser(parser, loopCount);
+            }
+
+            if (!parser->open(argv[i])) {
+                return 1;
+            }
+
+            retrace::mainLoop();
+
+            parser->close();
+
+            delete parser;
+            parser = NULL;
         }
-
-        retrace::mainLoop();
-
-        retrace::parser.close();
     }
-    
+
     os::resetExceptionCallback();
+
+    delete snapshotter;
 
     // XXX: X often hangs on XCloseDisplay
     //retrace::cleanUp();

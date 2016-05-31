@@ -99,16 +99,16 @@ static Context *sharedContext = NULL;
 
 struct PixelFormat
 {
-    glprofile::Profile profile;
+    glfeatures::Profile profile;
 
     PixelFormat() :
-        profile(glprofile::API_GL, 1, 0)
+        profile(glfeatures::API_GL, 1, 0)
     {}
 };
 
 
 static glws::Drawable *
-getDrawable(unsigned long drawable_id, glprofile::Profile profile) {
+getDrawable(unsigned long drawable_id, glfeatures::Profile profile) {
     if (drawable_id == 0) {
         return NULL;
     }
@@ -235,13 +235,13 @@ static void retrace_CGLChoosePixelFormat(trace::Call &call) {
     case 0:
         break;
     case kCGLOGLPVersion_Legacy:
-        pixelFormat->profile = glprofile::Profile(glprofile::API_GL, 1, 0);
+        pixelFormat->profile = glfeatures::Profile(glfeatures::API_GL, 1, 0);
         break;
     case kCGLOGLPVersion_GL3_Core:
-        pixelFormat->profile = glprofile::Profile(glprofile::API_GL, 3, 2, true, true);
+        pixelFormat->profile = glfeatures::Profile(glfeatures::API_GL, 3, 2, true, true);
         break;
     case kCGLOGLPVersion_GL4_Core:
-        pixelFormat->profile = glprofile::Profile(glprofile::API_GL, 4, 1, true, true);
+        pixelFormat->profile = glfeatures::Profile(glfeatures::API_GL, 4, 1, true, true);
         break;
     default:
         retrace::warning(call) << "unexpected opengl profile " << std::hex << profile << std::dec << "\n";
@@ -276,7 +276,7 @@ static void retrace_CGLCreateContext(trace::Call &call) {
 
     trace::Value & pix = call.argByName("pix");
     const PixelFormat *pixelFormat = retrace::asObjPointer<PixelFormat>(call, pix);
-    glprofile::Profile profile = pixelFormat ? pixelFormat->profile : glretrace::defaultProfile;
+    glfeatures::Profile profile = pixelFormat ? pixelFormat->profile : glretrace::defaultProfile;
 
     unsigned long long share = call.arg(1).toUIntPtr();
     Context *sharedContext = getContext(share);
@@ -303,7 +303,7 @@ static void retrace_CGLDestroyContext(trace::Call &call) {
         return;
     }
 
-    delete it->second;
+    it->second->release();
 
     context_map.erase(it);
 }
@@ -324,7 +324,7 @@ static void retrace_CGLSetSurface(trace::Call &call) {
 
     Context *context = getContext(ctx);
     if (context) {
-        glws::Drawable *drawable = getDrawable(sid, context->wsContext->profile);
+        glws::Drawable *drawable = getDrawable(sid, context->profile());
         context->drawable = drawable;
     }
 }
@@ -354,7 +354,7 @@ static void retrace_CGLSetCurrentContext(trace::Call &call) {
     glws::Drawable *new_drawable = NULL;
     if (new_context) {
         if (!new_context->drawable) {
-            glprofile::Profile profile = new_context->wsContext->profile;
+            glfeatures::Profile profile = new_context->profile();
             new_context->drawable = glretrace::createDrawable(profile);
         }
         new_drawable = new_context->drawable;
@@ -446,15 +446,14 @@ static void retrace_CGLTexImageIOSurface2D(trace::Call &call) {
 
     GLvoid * pixels = NULL;
 
-    if (glretrace::getCurrentContext() != context) {
-        if (retrace::debug) {
-            retrace::warning(call) << "current context mismatch\n";
-        }
+    glretrace::Context *currentContext = glretrace::getCurrentContext();
+    if (retrace::debug && currentContext != context) {
+        retrace::warning(call) << "current context mismatch\n";
     }
 
     glTexImage2D(target, level, internalformat, width, height, border, format, type, pixels);
 
-    if (retrace::debug && !glretrace::insideGlBeginEnd) {
+    if (retrace::debug && currentContext && !currentContext->insideBeginEnd) {
         glretrace::checkGlError(call);
     }
 }

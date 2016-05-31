@@ -14,15 +14,15 @@ class ImageViewer : public QDialog, public Ui_ImageViewer
 {
     Q_OBJECT
 public:
-    ImageViewer(QWidget *parent = 0);
+    ImageViewer(QWidget *parent = 0, bool opaque = false, bool alpha = false);
     ~ImageViewer();
 
     void setData(const QByteArray &data);
 
-    QSize sizeHint() const;
+    QSize sizeHint() const override;
 
 protected:
-    void resizeEvent(QResizeEvent *event);
+    void resizeEvent(QResizeEvent *event) override;
 
 private slots:
     void slotUpdate();

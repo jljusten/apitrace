@@ -43,9 +43,11 @@ class GlRetracer(Retracer):
         # Ensure pack function have side effects
         abort = False
         for function in api.getAllFunctions():
-            if not function.sideeffects and self.pack_function_regex.match(function.name):
-                sys.stderr.write('error: function %s must have sideeffects\n' % function.name)
-                abort = True
+            if not function.sideeffects:
+                if self.pack_function_regex.match(function.name) or \
+                   function.name.startswith('glGetQueryObject'):
+                    sys.stderr.write('error: function %s must have sideeffects\n' % function.name)
+                    abort = True
         if abort:
             sys.exit(1)
 
@@ -125,9 +127,27 @@ class GlRetracer(Retracer):
         is_draw_indirect = self.draw_indirect_function_regex.match(function.name) is not None
         is_misc_draw = self.misc_draw_function_regex.match(function.name)
 
+        if function.name.startswith('gl') and not function.name.startswith('glX'):
+            # The Windows OpenGL runtime will skip calls when there's no
+            # context bound to the current context, but this might cause
+            # crashes on other systems, particularly with NVIDIA Linux drivers.
+            print r'    glretrace::Context *currentContext = glretrace::getCurrentContext();'
+            print r'    if (!currentContext) {'
+            print r'        if (retrace::debug) {'
+            print r'            retrace::warning(call) << "no current context\n";'
+            print r'        }'
+            print r'#ifndef _WIN32'
+            print r'        return;'
+            print r'#endif'
+            print r'    }'
+
+            print r'    if (retrace::markers) {'
+            print r'        glretrace::insertCallMarker(call, currentContext);'
+            print r'    }'
+
         # For backwards compatibility with old traces where non VBO drawing was supported
         if (is_array_pointer or is_draw_arrays or is_draw_elements) and not is_draw_indirect:
-            print '    if (retrace::parser.version < 1) {'
+            print '    if (retrace::parser->getVersion() < 1) {'
 
             if is_array_pointer or is_draw_arrays:
                 print '        GLint _array_buffer = 0;'
@@ -147,11 +167,23 @@ class GlRetracer(Retracer):
 
         # When no pack buffer object is bound, the pack functions are no-ops.
         if self.pack_function_regex.match(function.name):
-            print '    GLint _pack_buffer = 0;'
-            print '    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &_pack_buffer);'
-            print '    if (!_pack_buffer) {'
-            print '        return;'
-            print '    }'
+            print r'    GLint _pack_buffer = 0;'
+            print r'    if (currentContext->features().pixel_buffer_object) {'
+            print r'        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &_pack_buffer);'
+            print r'    }'
+            print r'    if (!_pack_buffer) {'
+            print r'        return;'
+            print r'    }'
+
+        # When no query buffer object is bound, glGetQueryObject is a no-op.
+        if function.name.startswith('glGetQueryObject'):
+            print r'    GLint _query_buffer = 0;'
+            print r'    if (currentContext->features().query_buffer_object) {'
+            print r'        glGetIntegerv(GL_QUERY_BUFFER_BINDING, &_query_buffer);'
+            print r'    }'
+            print r'    if (!_query_buffer) {'
+            print r'        return;'
+            print r'    }'
 
         # Pre-snapshots
         if self.bind_framebuffer_function_regex.match(function.name):
@@ -198,11 +230,8 @@ class GlRetracer(Retracer):
             print '    glretrace::updateDrawable(std::max(dstX0, dstX1), std::max(dstY0, dstY1));'
 
         if function.name == "glEnd":
-            print '    glretrace::insideGlBeginEnd = false;'
-
-        if function.name.startswith('gl') and not function.name.startswith('glX'):
-            print r'    if (retrace::debug && !glretrace::getCurrentContext()) {'
-            print r'        retrace::warning(call) << "no current context\n";'
+            print r'    if (currentContext) {'
+            print r'        currentContext->insideBeginEnd = false;'
             print r'    }'
 
         if function.name == 'memcpy':
@@ -224,8 +253,6 @@ class GlRetracer(Retracer):
                 print r'            glGetBufferPointervOES(target, GL_BUFFER_MAP_POINTER_OES, &ptr);'
             elif function.name == 'glUnmapNamedBuffer':
                 print r'            glGetNamedBufferPointerv(buffer, GL_BUFFER_MAP_POINTER, &ptr);'
-            elif function.name == 'glUnmapNamedBuffer':
-                print r'            glGetNamedBufferPointerv(buffer, GL_BUFFER_MAP_POINTER, &ptr);'
             elif function.name == 'glUnmapNamedBufferEXT':
                 print r'            glGetNamedBufferPointervEXT(buffer, GL_BUFFER_MAP_POINTER, &ptr);'
             elif function.name == 'glUnmapObjectBufferATI':
@@ -239,10 +266,9 @@ class GlRetracer(Retracer):
             print r'            retrace::warning(call) << "failed to get mapped pointer\n";'
             print r'        }'
 
-        if function.name in ('glBindProgramPipeline', 'glBindProgramPipelineEXT'):
-            # Note if glBindProgramPipeline has ever been called
-            print r'    if (pipeline) {'
-            print r'        _pipelineHasBeenBound = true;'
+        if function.name.startswith('glCopyImageSubData'):
+            print r'    if (srcTarget == GL_RENDERBUFFER || dstTarget == GL_RENDERBUFFER) {'
+            print r'        retrace::warning(call) << " renderbuffer targets unsupported (https://github.com/apitrace/apitrace/issues/404)\n";'
             print r'    }'
 
         is_draw_arrays = self.draw_arrays_function_regex.match(function.name) is not None
@@ -253,33 +279,42 @@ class GlRetracer(Retracer):
             is_draw_arrays or
             is_draw_elements or
             is_misc_draw or
-            function.name == 'glBegin'
+            function.name == 'glBegin' or
+            function.name.startswith('glDispatchCompute')
         )
 
-        # Keep track of active program for call lists
+        # Keep track of current program/pipeline
         if function.name in ('glUseProgram', 'glUseProgramObjectARB'):
-            print r'    glretrace::Context *currentContext = glretrace::getCurrentContext();'
             print r'    if (currentContext) {'
-            print r'        currentContext->activeProgram = call.arg(0).toUInt();'
+            print r'        currentContext->currentUserProgram = call.arg(0).toUInt();'
+            print r'        currentContext->currentProgram = %s;' % function.args[0].name
+            print r'    }'
+        if function.name in ('glBindProgramPipeline', 'glBindProgramPipelineEXT'):
+            print r'    if (currentContext) {'
+            print r'        currentContext->currentPipeline = %s;' % function.args[0].name
             print r'    }'
 
         # Only profile if not inside a list as the queries get inserted into list
         if function.name == 'glNewList':
-            print r'    glretrace::insideList = true;'
+            print r'    if (currentContext) {'
+            print r'        currentContext->insideList = true;'
+            print r'    }'
 
         if function.name == 'glEndList':
-            print r'    glretrace::insideList = false;'
+            print r'    if (currentContext) {'
+            print r'        currentContext->insideList = false;'
+            print r'    }'
 
         if function.name == 'glBegin' or \
            is_draw_arrays or \
            is_draw_elements or \
            function.name.startswith('glBeginTransformFeedback'):
-            print r'    if (retrace::debug && !glretrace::insideList && !glretrace::insideGlBeginEnd && glretrace::getCurrentContext()) {'
+            print r'    if (retrace::debug) {'
             print r'        _validateActiveProgram(call);'
             print r'    }'
 
         if function.name != 'glEnd':
-            print r'    if (!glretrace::insideList && !glretrace::insideGlBeginEnd && retrace::profiling) {'
+            print r'    if (currentContext && !currentContext->insideList && !currentContext->insideBeginEnd && retrace::profiling) {'
             if profileDraw:
                 print r'        glretrace::beginProfile(call, true);'
             else:
@@ -339,10 +374,25 @@ class GlRetracer(Retracer):
         else:
             Retracer.invokeFunction(self, function)
 
-        if function.name == "glBegin":
-            print '    glretrace::insideGlBeginEnd = true;'
+        # Ensure this context flushes before switching to another thread to
+        # prevent deadlock.
+        # TODO: Defer flushing until another thread actually invokes
+        # ClientWaitSync.
+        if function.name.startswith("glFenceSync"):
+            print '    if (currentContext) {'
+            print '        currentContext->needsFlush = true;'
+            print '    }'
+        if function.name in ("glFlush", "glFinish"):
+            print '    if (currentContext) {'
+            print '        currentContext->needsFlush = false;'
+            print '    }'
 
-        print r'    if (!glretrace::insideList && !glretrace::insideGlBeginEnd && retrace::profiling) {'
+        if function.name == "glBegin":
+            print '    if (currentContext) {'
+            print '        currentContext->insideBeginEnd = true;'
+            print '    }'
+
+        print r'    if (currentContext && !currentContext->insideList && !currentContext->insideBeginEnd && retrace::profiling) {'
         if profileDraw:
             print r'        glretrace::endProfile(call, true);'
         else:
@@ -352,7 +402,7 @@ class GlRetracer(Retracer):
         # Error checking
         if function.name.startswith('gl'):
             # glGetError is not allowed inside glBegin/glEnd
-            print '    if (retrace::debug && !glretrace::insideGlBeginEnd && glretrace::getCurrentContext()) {'
+            print '    if (retrace::debug && currentContext && !currentContext->insideBeginEnd) {'
             print '        glretrace::checkGlError(call);'
             if function.name in ('glProgramStringARB', 'glLoadProgramNV'):
                 print r'        GLint error_position = -1;'
@@ -476,6 +526,9 @@ class GlRetracer(Retracer):
             assert isinstance(arg_type, (stdapi.Pointer, stdapi.Array, stdapi.Blob, stdapi.Opaque))
             print '    %s = static_cast<%s>((%s).toPointer());' % (lvalue, arg_type, rvalue)
             return
+        if function.name.startswith('glGetQueryObject') and arg.output:
+            print '    %s = static_cast<%s>((%s).toPointer());' % (lvalue, arg_type, rvalue)
+            return
 
         if (arg.type.depends(glapi.GLlocation) or \
             arg.type.depends(glapi.GLsubroutine)) \
@@ -520,9 +573,7 @@ if __name__ == '__main__':
 #include "glproc.hpp"
 #include "glretrace.hpp"
 #include "glstate.hpp"
-
-
-static bool _pipelineHasBeenBound = false;
+#include "glsize.hpp"
 
 
 static GLint
@@ -542,19 +593,14 @@ static GLint
 _getActiveProgram(void)
 {
     GLint program = -1;
-    if (glretrace::insideList) {
-        // glUseProgram & glUseProgramObjectARB are display-list-able
-        glretrace::Context *currentContext = glretrace::getCurrentContext();
-        program = _program_map[currentContext->activeProgram];
-    } else {
-        GLint pipeline = 0;
-        if (_pipelineHasBeenBound) {
-            glGetIntegerv(GL_PROGRAM_PIPELINE_BINDING, &pipeline);
-        }
+    glretrace::Context *currentContext = glretrace::getCurrentContext();
+    if (currentContext) {
+        GLint pipeline = currentContext->currentPipeline;
         if (pipeline) {
             glGetProgramPipelineiv(pipeline, GL_ACTIVE_PROGRAM, &program);
         } else {
-            glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+            program = currentContext->currentProgram;
+            assert(program == _glGetInteger(GL_CURRENT_PROGRAM));
         }
     }
     return program;
@@ -563,17 +609,22 @@ _getActiveProgram(void)
 static void
 _validateActiveProgram(trace::Call &call)
 {
-    assert(!glretrace::insideList);
+    assert(retrace::debug);
 
-    GLint pipeline = 0;
-    if (_pipelineHasBeenBound) {
-        glGetIntegerv(GL_PROGRAM_PIPELINE_BINDING, &pipeline);
+    glretrace::Context *currentContext = glretrace::getCurrentContext();
+    if (!currentContext ||
+        currentContext->insideList ||
+        currentContext->insideBeginEnd ||
+        currentContext->wsContext->profile.major < 2) {
+        return;
     }
+
+    GLint pipeline = currentContext->currentPipeline;
     if (pipeline) {
         // TODO
     } else {
-        GLint program = 0;
-        glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+        GLint program = currentContext->currentProgram;
+        assert(program == _glGetInteger(GL_CURRENT_PROGRAM));
         if (!program) {
             return;
         }

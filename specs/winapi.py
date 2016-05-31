@@ -36,6 +36,7 @@ UINT = Alias("UINT", UInt)
 LONG = Alias("LONG", Long)
 ULONG = Alias("ULONG", ULong)
 LONGLONG = Alias("LONGLONG", LongLong)
+ULONGLONG = Alias("ULONGLONG", ULongLong)
 FLOAT = Alias("FLOAT", Float)
 
 INT8 = Alias("INT8", Int8)
@@ -59,6 +60,11 @@ BOOL = Enum("BOOL", [
     "FALSE",
     "TRUE",
 ])
+
+PSTR = Alias("PSTR", CString)
+PCSTR = Alias("PCSTR", ConstCString)
+PWSTR = Alias("PWSTR", WString)
+PCWSTR = Alias("PCWSTR", ConstWString)
 
 LPLONG = Pointer(LONG)
 LPWORD = Pointer(WORD)
@@ -84,7 +90,10 @@ LPCVOID = OpaquePointer(Const(VOID))
 def DECLARE_HANDLE(expr):
     return Handle(expr, IntPointer(expr))
 
-HANDLE = DECLARE_HANDLE("HANDLE")
+# XXX: HANDLE type is often used for disjoint handle namespaces
+RAW_HANDLE = IntPointer("HANDLE")
+HANDLE = Handle("HANDLE", RAW_HANDLE)
+
 HWND = DECLARE_HANDLE("HWND")
 HDC = DECLARE_HANDLE("HDC")
 HMONITOR = DECLARE_HANDLE("HMONITOR")

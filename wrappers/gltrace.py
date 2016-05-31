@@ -117,43 +117,17 @@ class GlTracer(Tracer):
         print '#include <algorithm>'
         print
         print '#include "gltrace.hpp"'
+        print '#include "gltrace_arrays.hpp"'
         print
-        
-        # Which glVertexAttrib* variant to use
-        print 'enum vertex_attrib {'
-        print '    VERTEX_ATTRIB,'
-        print '    VERTEX_ATTRIB_NV,'
-        print '};'
-        print
-        print 'static vertex_attrib _get_vertex_attrib(void) {'
-        print '    gltrace::Context *ctx = gltrace::getContext();'
-        print '    if (ctx->user_arrays_nv) {'
-        print '        GLboolean _vertex_program = GL_FALSE;'
-        print '        _glGetBooleanv(GL_VERTEX_PROGRAM_ARB, &_vertex_program);'
-        print '        if (_vertex_program) {'
-        print '            if (ctx->user_arrays_nv) {'
-        print '                GLint _vertex_program_binding_nv = _glGetInteger(GL_VERTEX_PROGRAM_BINDING_NV);'
-        print '                if (_vertex_program_binding_nv) {'
-        print '                    return VERTEX_ATTRIB_NV;'
-        print '                }'
-        print '            }'
-        print '        }'
-        print '    }'
-        print '    return VERTEX_ATTRIB;'
-        print '}'
-        print
-
-        self.defineShadowBufferHelper()
 
         # Whether we need user arrays
-        print 'static inline bool _need_user_arrays(void)'
+        print 'static inline bool _need_user_arrays(gltrace::Context *_ctx)'
         print '{'
-        print '    gltrace::Context *ctx = gltrace::getContext();'
-        print '    if (!ctx->user_arrays) {'
+        print '    if (!_ctx->user_arrays) {'
         print '        return false;'
         print '    }'
         print
-        print '    glprofile::Profile profile = ctx->profile;'
+        print '    glfeatures::Profile profile = _ctx->profile;'
         print '    bool es1 = profile.es() && profile.major == 1;'
         print
 
@@ -182,25 +156,12 @@ class GlTracer(Tracer):
         print '    if (es1)'
         print '        return false;'
         print
-        print '    vertex_attrib _vertex_attrib = _get_vertex_attrib();'
-        print
         print '    // glVertexAttribPointer'
-        print '    if (_vertex_attrib == VERTEX_ATTRIB) {'
-        print '        GLint _max_vertex_attribs = _glGetInteger(GL_MAX_VERTEX_ATTRIBS);'
-        print '        for (GLint index = 0; index < _max_vertex_attribs; ++index) {'
-        print '            if (_glGetVertexAttribi(index, GL_VERTEX_ATTRIB_ARRAY_ENABLED) &&'
-        print '                _glGetVertexAttribi(index, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING) == 0) {'
-        print '                return true;'
-        print '            }'
-        print '        }'
-        print '    }'
-        print
-        print '    // glVertexAttribPointerNV'
-        print '    if (_vertex_attrib == VERTEX_ATTRIB_NV) {'
-        print '        for (GLint index = 0; index < 16; ++index) {'
-        print '            if (_glIsEnabled(GL_VERTEX_ATTRIB_ARRAY0_NV + index)) {'
-        print '                return true;'
-        print '            }'
+        print '    GLint _max_vertex_attribs = _glGetInteger(GL_MAX_VERTEX_ATTRIBS);'
+        print '    for (GLint index = 0; index < _max_vertex_attribs; ++index) {'
+        print '        if (_glGetVertexAttribi(index, GL_VERTEX_ATTRIB_ARRAY_ENABLED) &&'
+        print '            _glGetVertexAttribi(index, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING) == 0) {'
+        print '            return true;'
         print '        }'
         print '    }'
         print
@@ -209,11 +170,18 @@ class GlTracer(Tracer):
         print '}'
         print
 
-        print 'static void _trace_user_arrays(GLuint count);'
+        print r'static void _trace_user_arrays(gltrace::Context *_ctx, GLuint count);'
         print
 
-        print '// whether glLockArraysEXT() has ever been called'
-        print 'static bool _checkLockArraysEXT = false;'
+        # Declare helper functions to emit fake function calls into the trace
+        for function in api.getAllFunctions():
+            if function.name in self.fake_function_names:
+                print function.prototype('_fake_' + function.name) + ';'
+        print
+        print r'static inline void'
+        print r'_fakeStringMarker(const std::string &s) {'
+        print r'    _fake_glStringMarkerGREMEDY(s.length(), s.data());'
+        print r'}'
         print
 
         # Buffer mappings
@@ -254,6 +222,8 @@ class GlTracer(Tracer):
         print '_gl_param_size(GLenum pname) {'
         print '    switch (pname) {'
         for function, type, count, name in glparams.parameters:
+            if name == 'GL_PROGRAM_BINARY_FORMATS':
+                count = 0
             if type is not None:
                 print '    case %s: return %s;' % (name, count)
         print '    default:'
@@ -266,8 +236,8 @@ class GlTracer(Tracer):
         # states such as GL_UNPACK_ROW_LENGTH are not available in GLES
         print 'static inline bool'
         print 'can_unpack_subimage(void) {'
-        print '    gltrace::Context *ctx = gltrace::getContext();'
-        print '    return ctx->profile.desktop();'
+        print '    gltrace::Context *_ctx = gltrace::getContext();'
+        print '    return _ctx->profile.desktop();'
         print '}'
         print
 
@@ -313,6 +283,7 @@ class GlTracer(Tracer):
                 ptype = function_pointer_type(function)
                 pvalue = function_pointer_value(function)
                 print '    if (strcmp("%s", (const char *)procName) == 0) {' % function.name
+                print '        assert(procPtr != (%s)&%s);' % (retType, function.name)
                 print '        %s = (%s)procPtr;' % (pvalue, ptype)
                 print '        return (%s)&%s;' % (retType, function.name,)
                 print '    }'
@@ -322,50 +293,6 @@ class GlTracer(Tracer):
             print
         else:
             Tracer.traceApi(self, api)
-
-    def defineShadowBufferHelper(self):
-        print 'void _shadow_glGetBufferSubData(GLenum target, GLintptr offset,'
-        print '                                GLsizeiptr size, GLvoid *data)'
-        print '{'
-        print '    gltrace::Context *ctx = gltrace::getContext();'
-        print '    if (!ctx->needsShadowBuffers() || target != GL_ELEMENT_ARRAY_BUFFER) {'
-        print '        _glGetBufferSubData(target, offset, size, data);'
-        print '        return;'
-        print '    }'
-        print
-        print '    GLint buffer_binding = _glGetInteger(GL_ELEMENT_ARRAY_BUFFER_BINDING);'
-        print '    if (buffer_binding > 0) {'
-        print '        gltrace::Buffer & buf = ctx->buffers[buffer_binding];'
-        print '        buf.getSubData(offset, size, data);'
-        print '    }'
-        print '}'
-
-    def shadowBufferMethod(self, method):
-        # Emit code to fetch the shadow buffer, and invoke a method
-        print '    gltrace::Context *ctx = gltrace::getContext();'
-        print '    if (ctx->needsShadowBuffers() && target == GL_ELEMENT_ARRAY_BUFFER) {'
-        print '        GLint buffer_binding = _glGetInteger(GL_ELEMENT_ARRAY_BUFFER_BINDING);'
-        print '        if (buffer_binding > 0) {'
-        print '            gltrace::Buffer & buf = ctx->buffers[buffer_binding];'
-        print '            buf.' + method + ';'
-        print '        }'
-        print '    }'
-        print
-
-    def shadowBufferProlog(self, function):
-        if function.name == 'glBufferData':
-            self.shadowBufferMethod('bufferData(size, data)')
-
-        if function.name == 'glBufferSubData':
-            self.shadowBufferMethod('bufferSubData(offset, size, data)')
-
-        if function.name == 'glDeleteBuffers':
-            print '    gltrace::Context *ctx = gltrace::getContext();'
-            print '    if (ctx->needsShadowBuffers()) {'
-            print '        for (GLsizei i = 0; i < n; i++) {'
-            print '            ctx->buffers.erase(buffer[i]);'
-            print '        }'
-            print '    }'
 
     array_pointer_function_names = set((
         "glVertexPointer",
@@ -400,7 +327,7 @@ class GlTracer(Tracer):
     ))
 
     # XXX: We currently ignore the gl*Draw*ElementArray* functions
-    draw_function_regex = re.compile(r'^gl([A-Z][a-z]+)*Draw(Range)?(Arrays|Elements)([A-Z][a-zA-Z]*)?$' )
+    draw_function_regex = re.compile(r'^(?P<radical>gl([A-Z][a-z]+)*Draw(Range)?(Arrays|Elements))(?P<suffix>[A-Z][a-zA-Z]*)?$' )
 
     interleaved_formats = [
          'GL_V2F',
@@ -429,10 +356,10 @@ class GlTracer(Tracer):
             print '            warned = true;'
             print '            os::log("apitrace: warning: %s: call will be faked due to pointer to user memory (https://github.com/apitrace/apitrace/blob/master/docs/BUGS.markdown#tracing)\\n", __FUNCTION__);'
             print '        }'
-            print '        gltrace::Context *ctx = gltrace::getContext();'
-            print '        ctx->user_arrays = true;'
+            print '        gltrace::Context *_ctx = gltrace::getContext();'
+            print '        _ctx->user_arrays = true;'
             if function.name == "glVertexAttribPointerNV":
-                print '        ctx->user_arrays_nv = true;'
+                print r'        os::log("apitrace: warning: %s: user memory arrays with NV_vertex_program longer supported\n", __FUNCTION__);'
             self.invokeFunction(function)
 
             # And also break down glInterleavedArrays into the individual calls
@@ -465,15 +392,10 @@ class GlTracer(Tracer):
                     enable_name = 'GL_%s_ARRAY' % uppercase_name
 
                     # Emit a fake function
-                    print '        {'
-                    print '            static const trace::FunctionSig &_sig = %s ? _glEnableClientState_sig : _glDisableClientState_sig;' % flag_name
-                    print '            unsigned _call = trace::localWriter.beginEnter(&_sig, true);'
-                    print '            trace::localWriter.beginArg(0);'
-                    self.serializeValue(glapi.GLenum, enable_name)
-                    print '            trace::localWriter.endArg();'
-                    print '            trace::localWriter.endEnter();'
-                    print '            trace::localWriter.beginLeave(_call);'
-                    print '            trace::localWriter.endLeave();'
+                    print '        if (%s) {' % flag_name
+                    print '            _fake_glEnableClientState(%s);' % enable_name
+                    print '        } else {'
+                    print '            _fake_glDisableClientState(%s);' % enable_name
                     print '        }'
 
             # Warn about buggy glGet(GL_*ARRAY_SIZE) not returning GL_BGRA
@@ -499,34 +421,50 @@ class GlTracer(Tracer):
             print '    }'
 
         # ... to the draw calls
-        if self.draw_function_regex.match(function.name):
-            print '    if (_need_user_arrays()) {'
+        mo = self.draw_function_regex.match(function.name)
+        if mo:
+            functionRadical = mo.group('radical')
+            print '    gltrace::Context *_ctx = gltrace::getContext();'
+            print '    if (_need_user_arrays(_ctx)) {'
             if 'Indirect' in function.name:
                 print r'        os::log("apitrace: warning: %s: indirect user arrays not supported\n");' % (function.name,)
             else:
-                arg_names = ', '.join([arg.name for arg in function.args[1:]])
-                print '        GLuint _count = _%s_count(%s);' % (function.name, arg_names)
-                # Some apps, in particular Quake3, can tell the driver to lock more
-                # vertices than those actually required for the draw call.
-                print '        if (_checkLockArraysEXT) {'
-                print '            GLuint _locked_count = _glGetInteger(GL_ARRAY_ELEMENT_LOCK_FIRST_EXT)'
-                print '                                 + _glGetInteger(GL_ARRAY_ELEMENT_LOCK_COUNT_EXT);'
-                print '            _count = std::max(_count, _locked_count);'
-                print '        }'
-                print '        _trace_user_arrays(_count);'
+                # Pick the corresponding *Params
+                if 'Arrays' in functionRadical:
+                    paramsType = 'DrawArraysParams'
+                elif 'Elements' in functionRadical:
+                    paramsType = 'DrawElementsParams'
+                else:
+                    assert 0
+                if 'Multi' in functionRadical:
+                    assert 'drawcount' in function.argNames()
+                    paramsType = 'Multi' + paramsType
+                print r'        %s _params;' % paramsType
+
+                for arg in function.args:
+                    paramsMember = arg.name.lower()
+                    if paramsMember in ('mode', 'modestride'):
+                        continue
+                    print r'        _params.%s = %s;' % (paramsMember, arg.name)
+
+                print '        GLuint _count = _glDraw_count(_ctx, _params);'
+                print '        _trace_user_arrays(_ctx, _count);'
             print '    }'
         if function.name == 'glLockArraysEXT':
-            print '        _checkLockArraysEXT = true;'
+            print '    gltrace::Context *_ctx = gltrace::getContext();'
+            print '    if (_ctx) {'
+            print '        _ctx->lockedArrayCount = first + count;'
+            print '    }'
 
         # Warn if user arrays are used with glBegin/glArrayElement/glEnd.
         if function.name == 'glBegin':
-            print r'    gltrace::Context *ctx = gltrace::getContext();'
-            print r'    ctx->userArraysOnBegin = _need_user_arrays();'
+            print r'    gltrace::Context *_ctx = gltrace::getContext();'
+            print r'    _ctx->userArraysOnBegin = _need_user_arrays(_ctx);'
         if function.name.startswith('glArrayElement'):
-            print r'    gltrace::Context *ctx = gltrace::getContext();'
-            print r'    if (ctx->userArraysOnBegin) {'
+            print r'    gltrace::Context *_ctx = gltrace::getContext();'
+            print r'    if (_ctx->userArraysOnBegin) {'
             print r'        os::log("apitrace: warning: user arrays with glArrayElement not supported (https://github.com/apitrace/apitrace/issues/276)\n");'
-            print r'        ctx->userArraysOnBegin = false;'
+            print r'        _ctx->userArraysOnBegin = false;'
             print r'    }'
         
         # Emit a fake memcpy on buffer uploads
@@ -606,7 +544,6 @@ class GlTracer(Tracer):
             print '            }'
             print '            if (flush && length > 0) {'
             self.emit_memcpy('map', 'length')
-            self.shadowBufferMethod('bufferSubData(offset, length, map)')
             print '            }'
             print '        }'
             print '    }'
@@ -669,24 +606,34 @@ class GlTracer(Tracer):
 
         # FIXME: We don't support coherent/pinned memory mappings
         if function.name in ('glBufferStorage', 'glNamedBufferStorage', 'glNamedBufferStorageEXT'):
-            print r'    if (!(flags & GL_MAP_PERSISTENT_BIT)) {'
-            print r'        os::log("apitrace: warning: %s: MAP_NOTIFY_EXPLICIT_BIT_VMWX set w/o MAP_PERSISTENT_BIT\n", __FUNCTION__);'
+            print r'    if (flags & GL_MAP_NOTIFY_EXPLICIT_BIT_VMWX) {'
+            print r'        if (!(flags & GL_MAP_PERSISTENT_BIT)) {'
+            print r'            os::log("apitrace: warning: %s: MAP_NOTIFY_EXPLICIT_BIT_VMWX set w/o MAP_PERSISTENT_BIT\n", __FUNCTION__);'
+            print r'        }'
+            print r'        if (!(flags & GL_MAP_WRITE_BIT)) {'
+            print r'            os::log("apitrace: warning: %s: MAP_NOTIFY_EXPLICIT_BIT_VMWX set w/o MAP_WRITE_BIT\n", __FUNCTION__);'
+            print r'        }'
+            print r'        flags &= ~GL_MAP_NOTIFY_EXPLICIT_BIT_VMWX;'
             print r'    }'
-            print r'    flags &= ~GL_MAP_NOTIFY_EXPLICIT_BIT_VMWX;'
         if function.name in ('glMapBufferRange', 'glMapBufferRangeEXT', 'glMapNamedBufferRange', 'glMapNamedBufferRangeEXT'):
             print r'    if (access & GL_MAP_NOTIFY_EXPLICIT_BIT_VMWX) {'
             print r'        if (!(access & GL_MAP_PERSISTENT_BIT)) {'
             print r'            os::log("apitrace: warning: %s: MAP_NOTIFY_EXPLICIT_BIT_VMWX set w/o MAP_PERSISTENT_BIT\n", __FUNCTION__);'
             print r'        }'
+            print r'        if (!(access & GL_MAP_WRITE_BIT)) {'
+            print r'            os::log("apitrace: warning: %s: MAP_NOTIFY_EXPLICIT_BIT_VMWX set w/o MAP_WRITE_BIT\n", __FUNCTION__);'
+            print r'        }'
             print r'        if (access & GL_MAP_FLUSH_EXPLICIT_BIT) {'
             print r'            os::log("apitrace: warning: %s: MAP_NOTIFY_EXPLICIT_BIT_VMWX set w/ MAP_FLUSH_EXPLICIT_BIT\n", __FUNCTION__);'
             print r'        }'
             print r'        access &= ~GL_MAP_NOTIFY_EXPLICIT_BIT_VMWX;'
-            print r'    } else if (access & GL_MAP_COHERENT_BIT) {'
-            print r'        os::log("apitrace: warning: %s: MAP_COHERENT_BIT unsupported (https://github.com/apitrace/apitrace/issues/232)\n", __FUNCTION__);'
-            print r'    } else if ((access & GL_MAP_PERSISTENT_BIT) &&'
-            print r'               !(access & GL_MAP_FLUSH_EXPLICIT_BIT)) {'
-            print r'        os::log("apitrace: warning: %s: MAP_PERSISTENT_BIT w/o FLUSH_EXPLICIT_BIT unsupported (https://github.com/apitrace/apitrace/issues/232)\n", __FUNCTION__);'
+            print r'    } else if (access & GL_MAP_WRITE_BIT) {'
+            print r'        if (access & GL_MAP_COHERENT_BIT) {'
+            print r'            os::log("apitrace: warning: %s: MAP_COHERENT_BIT|MAP_WRITE_BIT unsupported <https://git.io/vV9kM>\n", __FUNCTION__);'
+            print r'        } else if ((access & GL_MAP_PERSISTENT_BIT) &&'
+            print r'                   !(access & GL_MAP_FLUSH_EXPLICIT_BIT)) {'
+            print r'            os::log("apitrace: warning: %s: MAP_PERSISTENT_BIT|MAP_WRITE_BIT w/o MAP_FLUSH_EXPLICIT_BIT unsupported <https://git.io/vV9kM>\n", __FUNCTION__);'
+            print r'        }'
             print r'    }'
         if function.name in ('glBufferData', 'glBufferDataARB'):
             print r'    if (target == GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD) {'
@@ -717,8 +664,7 @@ class GlTracer(Tracer):
             print "        if (name[0] != 'g' || name[1] != 'l' || name[2] != '_') {"
             print '            GLint location = _glGetAttribLocation(program, name);'
             print '            if (location >= 0) {'
-            bind_function = glapi.glapi.getFunctionByName('glBindAttribLocation')
-            self.fake_call(bind_function, ['program', 'location', 'name'])
+            print '                _fake_glBindAttribLocation(program, location, name);'
             print '            }'
             print '        }'
             print '    }'
@@ -735,13 +681,10 @@ class GlTracer(Tracer):
             print "        if (name[0] != 'g' || name[1] != 'l' || name[2] != '_') {"
             print '            GLint location = _glGetAttribLocationARB(programObj, name);'
             print '            if (location >= 0) {'
-            bind_function = glapi.glapi.getFunctionByName('glBindAttribLocationARB')
-            self.fake_call(bind_function, ['programObj', 'location', 'name'])
+            print '                _fake_glBindAttribLocationARB(programObj, location, name);'
             print '            }'
             print '        }'
             print '    }'
-
-        self.shadowBufferProlog(function)
 
         Tracer.traceFunctionImplBody(self, function)
 
@@ -768,6 +711,17 @@ class GlTracer(Tracer):
         'glGetObjectLabel',
         'glObjectPtrLabel',
         'glGetObjectPtrLabel',
+        # GL_KHR_debug (for OpenGL ES)
+        'glDebugMessageControlKHR',
+        'glDebugMessageInsertKHR',
+        'glDebugMessageCallbackKHR',
+        'glGetDebugMessageLogKHR',
+        'glPushDebugGroupKHR',
+        'glPopDebugGroupKHR',
+        'glObjectLabelKHR',
+        'glGetObjectLabelKHR',
+        'glObjectPtrLabelKHR',
+        'glGetObjectPtrLabelKHR',
         # GL_ARB_debug_output
         'glDebugMessageControlARB',
         'glDebugMessageInsertARB',
@@ -909,9 +863,9 @@ class GlTracer(Tracer):
                 or (isinstance(arg.type, stdapi.Const) \
                     and isinstance(arg.type.type, stdapi.Blob))):
             print '    {'
-            print '        gltrace::Context *ctx = gltrace::getContext();'
+            print '        gltrace::Context *_ctx = gltrace::getContext();'
             print '        GLint _unpack_buffer = 0;'
-            print '        if (ctx->profile.desktop())'
+            print '        if (_ctx->features.pixel_buffer_object)'
             print '            _glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &_unpack_buffer);'
             print '        if (_unpack_buffer) {'
             print '            trace::localWriter.writePointer((uintptr_t)%s);' % arg.name
@@ -919,6 +873,20 @@ class GlTracer(Tracer):
             Tracer.serializeArgValue(self, function, arg)
             print '        }'
             print '    }'
+            return
+
+        # Recognize offsets instead of pointers when query buffer is bound
+        if function.name.startswith('glGetQueryObject') and arg.output:
+            print r'    gltrace::Context *_ctx = gltrace::getContext();'
+            print r'    GLint _query_buffer = 0;'
+            print r'    if (_ctx->features.query_buffer_object) {'
+            print r'        _query_buffer = _glGetInteger(GL_QUERY_BUFFER_BINDING);'
+            print r'    }'
+            print r'    if (_query_buffer) {'
+            print r'        trace::localWriter.writePointer((uintptr_t)%s);' % arg.name
+            print r'    } else {'
+            Tracer.serializeArgValue(self, function, arg)
+            print r'    }'
             return
 
         # Several GL state functions take GLenum symbolic names as
@@ -938,23 +906,51 @@ class GlTracer(Tracer):
 
         Tracer.serializeArgValue(self, function, arg)
 
+    fake_function_names = [
+        'glBindAttribLocation',
+        'glBindAttribLocationARB',
+        'glBindBuffer',
+        'glBitmap',
+        'glClientActiveTexture',
+        'glDisableClientState',
+        'glEnableClientState',
+        'glEndList',
+        'glNewList',
+        'glScissor',
+        'glStringMarkerGREMEDY',
+        'glTexImage2D',
+        'glViewport',
+    ]
+
     def footer(self, api):
         Tracer.footer(self, api)
 
+        # Generate helper functions to emit fake function calls into the trace
+        for function in api.getAllFunctions():
+            if function.name in self.fake_function_names:
+                print function.prototype('_fake_' + function.name)
+                print r'{'
+                self.fake_call(function, function.argNames())
+                print r'}'
+                print
+
         # A simple state tracker to track the pointer values
         # update the state
-        print 'static void _trace_user_arrays(GLuint count)'
+        print 'static void _trace_user_arrays(gltrace::Context *_ctx, GLuint count)'
         print '{'
-        print '    gltrace::Context *ctx = gltrace::getContext();'
-        print
-        print '    glprofile::Profile profile = ctx->profile;'
+        print '    glfeatures::Profile profile = _ctx->profile;'
         print '    bool es1 = profile.es() && profile.major == 1;'
+        print
+
+        # Some apps, in particular Quake3, can tell the driver to lock more
+        # vertices than those actually required for the draw call.
+        print '    count = std::max(count, _ctx->lockedArrayCount);'
         print
 
         # Temporarily unbind the array buffer
         print '    GLint _array_buffer = _glGetInteger(GL_ARRAY_BUFFER_BINDING);'
         print '    if (_array_buffer) {'
-        self.fake_glBindBuffer(api, 'GL_ARRAY_BUFFER', '0')
+        print '        _fake_glBindBuffer(GL_ARRAY_BUFFER, 0);'
         print '    }'
         print
 
@@ -1023,71 +1019,52 @@ class GlTracer(Tracer):
         print '    if (es1)'
         print '        return;'
         print
-        print '    vertex_attrib _vertex_attrib = _get_vertex_attrib();'
+
+        function_name = 'glVertexAttribPointer'
+        function = api.getFunctionByName(function_name)
+
+        print '    // %s' % function.prototype()
+        print '    GLint _max_vertex_attribs = _glGetInteger(GL_MAX_VERTEX_ATTRIBS);'
+        print '    for (GLint index = 0; index < _max_vertex_attribs; ++index) {'
+        print '        GLint _enabled = 0;'
+        print '        _glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &_enabled);'
+        print '        if (_enabled) {'
+        print '            GLint _binding = 0;'
+        print '            _glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &_binding);'
+        print '            if (!_binding) {'
+
+        # Get the arguments via glGet*
+        for arg in function.args[1:]:
+            arg_get_enum = 'GL_VERTEX_ATTRIB_ARRAY_%s' % (arg.name.upper())
+            arg_get_function, arg_type = TypeGetter('glGetVertexAttrib', False).visit(arg.type)
+            print '                %s %s = 0;' % (arg_type, arg.name)
+            print '                _%s(index, %s, &%s);' % (arg_get_function, arg_get_enum, arg.name)
+
+        arg_names = ', '.join([arg.name for arg in function.args[1:-1]])
+        print '                size_t _size = _%s_size(%s, count);' % (function.name, arg_names)
+
+        # Emit a fake function
+        print '                unsigned _call = trace::localWriter.beginEnter(&_%s_sig, true);' % (function.name,)
+        for arg in function.args:
+            assert not arg.output
+            print '                trace::localWriter.beginArg(%u);' % (arg.index,)
+            if arg.name != 'pointer':
+                self.serializeValue(arg.type, arg.name)
+            else:
+                print '                trace::localWriter.writeBlob((const void *)%s, _size);' % (arg.name)
+            print '                trace::localWriter.endArg();'
+
+        print '                trace::localWriter.endEnter();'
+        print '                trace::localWriter.beginLeave(_call);'
+        print '                trace::localWriter.endLeave();'
+        print '            }'
+        print '        }'
+        print '    }'
         print
-        for suffix in ['', 'NV']:
-            if suffix:
-                SUFFIX = '_' + suffix
-            else:
-                SUFFIX = suffix
-            function_name = 'glVertexAttribPointer' + suffix
-            function = api.getFunctionByName(function_name)
-
-            print '    // %s' % function.prototype()
-            print '    if (_vertex_attrib == VERTEX_ATTRIB%s) {' % SUFFIX
-            if suffix == 'NV':
-                print '        GLint _max_vertex_attribs = 16;'
-            else:
-                print '        GLint _max_vertex_attribs = _glGetInteger(GL_MAX_VERTEX_ATTRIBS);'
-            print '        for (GLint index = 0; index < _max_vertex_attribs; ++index) {'
-            print '            GLint _enabled = 0;'
-            if suffix == 'NV':
-                print '            _glGetIntegerv(GL_VERTEX_ATTRIB_ARRAY0_NV + index, &_enabled);'
-            else:
-                print '            _glGetVertexAttribiv%s(index, GL_VERTEX_ATTRIB_ARRAY_ENABLED%s, &_enabled);' % (suffix, SUFFIX)
-            print '            if (_enabled) {'
-            print '                GLint _binding = 0;'
-            if suffix != 'NV':
-                # It doesn't seem possible to use VBOs with NV_vertex_program.
-                print '                _glGetVertexAttribiv%s(index, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING%s, &_binding);' % (suffix, SUFFIX)
-            print '                if (!_binding) {'
-
-            # Get the arguments via glGet*
-            for arg in function.args[1:]:
-                if suffix == 'NV':
-                    arg_get_enum = 'GL_ATTRIB_ARRAY_%s%s' % (arg.name.upper(), SUFFIX)
-                else:
-                    arg_get_enum = 'GL_VERTEX_ATTRIB_ARRAY_%s%s' % (arg.name.upper(), SUFFIX)
-                arg_get_function, arg_type = TypeGetter('glGetVertexAttrib', False, suffix).visit(arg.type)
-                print '                    %s %s = 0;' % (arg_type, arg.name)
-                print '                    _%s(index, %s, &%s);' % (arg_get_function, arg_get_enum, arg.name)
-            
-            arg_names = ', '.join([arg.name for arg in function.args[1:-1]])
-            print '                    size_t _size = _%s_size(%s, count);' % (function.name, arg_names)
-
-            # Emit a fake function
-            print '                    unsigned _call = trace::localWriter.beginEnter(&_%s_sig, true);' % (function.name,)
-            for arg in function.args:
-                assert not arg.output
-                print '                    trace::localWriter.beginArg(%u);' % (arg.index,)
-                if arg.name != 'pointer':
-                    self.serializeValue(arg.type, arg.name)
-                else:
-                    print '                    trace::localWriter.writeBlob((const void *)%s, _size);' % (arg.name)
-                print '                    trace::localWriter.endArg();'
-            
-            print '                    trace::localWriter.endEnter();'
-            print '                    trace::localWriter.beginLeave(_call);'
-            print '                    trace::localWriter.endLeave();'
-            print '                }'
-            print '            }'
-            print '        }'
-            print '    }'
-            print
 
         # Restore the original array_buffer
         print '    if (_array_buffer) {'
-        self.fake_glBindBuffer(api, 'GL_ARRAY_BUFFER', '_array_buffer')
+        print '        _fake_glBindBuffer(GL_ARRAY_BUFFER, _array_buffer);'
         print '    }'
         print
 
@@ -1101,15 +1078,21 @@ class GlTracer(Tracer):
 
     def array_prolog(self, api, uppercase_name):
         if uppercase_name == 'TEXTURE_COORD':
-            print '    GLint client_active_texture = _glGetInteger(GL_CLIENT_ACTIVE_TEXTURE);'
-            print '    GLint max_texture_coords = 0;'
-            print '    if (ctx->profile.desktop())'
-            print '        _glGetIntegerv(GL_MAX_TEXTURE_COORDS, &max_texture_coords);'
+            print '    GLint max_units = 0;'
+            print '    if (_ctx->profile.desktop())'
+            print '        _glGetIntegerv(GL_MAX_TEXTURE_COORDS, &max_units);'
             print '    else'
-            print '        _glGetIntegerv(GL_MAX_TEXTURE_UNITS, &max_texture_coords);'
-            print '    for (GLint unit = 0; unit < max_texture_coords; ++unit) {'
+            print '        _glGetIntegerv(GL_MAX_TEXTURE_UNITS, &max_units);'
+            print '    GLint client_active_texture = GL_TEXTURE0;'
+            print '    if (max_units > 0) {'
+            print '        _glGetIntegerv(GL_CLIENT_ACTIVE_TEXTURE, &client_active_texture);'
+            print '    }'
+            print '    GLint unit = 0;'
+            print '    do {'
             print '        GLint texture = GL_TEXTURE0 + unit;'
-            print '        _glClientActiveTexture(texture);'
+            print '        if (max_units > 0) {'
+            print '            _glClientActiveTexture(texture);'
+            print '        }'
 
     def array_trace_prolog(self, api, uppercase_name):
         if uppercase_name == 'TEXTURE_COORD':
@@ -1117,52 +1100,28 @@ class GlTracer(Tracer):
 
     def array_epilog(self, api, uppercase_name):
         if uppercase_name == 'TEXTURE_COORD':
-            print '    }'
+            print '    } while (++unit < max_units);'
         self.array_cleanup(api, uppercase_name)
 
     def array_cleanup(self, api, uppercase_name):
         if uppercase_name == 'TEXTURE_COORD':
-            print '    _glClientActiveTexture(client_active_texture);'
+            print '    if (max_units > 0) {'
+            print '        _glClientActiveTexture(client_active_texture);'
+            print '    }'
         
     def array_trace_intermezzo(self, api, uppercase_name):
         if uppercase_name == 'TEXTURE_COORD':
             print '    if (texture != client_active_texture || client_active_texture_dirty) {'
             print '        client_active_texture_dirty = true;'
-            self.fake_glClientActiveTexture_call(api, "texture");
+            print '        _fake_glClientActiveTexture(texture);'
             print '    }'
 
     def array_trace_epilog(self, api, uppercase_name):
         if uppercase_name == 'TEXTURE_COORD':
             print '    if (client_active_texture_dirty) {'
-            self.fake_glClientActiveTexture_call(api, "client_active_texture");
+            print '        _fake_glClientActiveTexture(client_active_texture);'
             print '    }'
 
-    def fake_glBindBuffer(self, api, target, buffer):
-        function = api.getFunctionByName('glBindBuffer')
-        self.fake_call(function, [target, buffer])
-
-    def fake_glClientActiveTexture_call(self, api, texture):
-        function = api.getFunctionByName('glClientActiveTexture')
-        self.fake_call(function, [texture])
-
     def emitFakeTexture2D(self):
-        function = glapi.glapi.getFunctionByName('glTexImage2D')
-        instances = function.argNames()
-        print '        unsigned _fake_call = trace::localWriter.beginEnter(&_%s_sig, true);' % (function.name,)
-        for arg in function.args:
-            assert not arg.output
-            self.serializeArg(function, arg)
-        print '        trace::localWriter.endEnter();'
-        print '        trace::localWriter.beginLeave(_fake_call);'
-        print '        trace::localWriter.endLeave();'
-
-
-
-
-
-
-
-
-
-
+        print r'    _fake_glTexImage2D(target, level, internalformat, width, height, border, format, type, pixels);'
 

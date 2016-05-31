@@ -53,16 +53,51 @@ include_directories (
     ${CMAKE_SOURCE_DIR}/helpers
     ${CMAKE_BINARY_DIR}/dispatch
     ${CMAKE_SOURCE_DIR}/dispatch
+    ${CMAKE_SOURCE_DIR}/lib/guids
+    ${CMAKE_SOURCE_DIR}/thirdparty/crc32c
 )
+
+if (NOT WIN32 AND NOT APPLE)
+    # Prevent symbol relocations internal to our wrapper library to be
+    # overwritten by the application.  And fail if there are missing
+    # symbols.
+    set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-Bsymbolic -Wl,-Bsymbolic-functions")
+    set (CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,-Bsymbolic -Wl,-Bsymbolic-functions")
+
+    # Fail if there are missing symbols, except when using Address Sanitizer
+    # since libasan symbols are supposed to be preloaded.
+    if (NOT ENABLE_ASAN)
+        set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,defs")
+        set (CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,-z,defs")
+    endif ()
+endif ()
 
 set (CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+# Code shared across all APIs
 add_convenience_library (trace
     assert.cpp
+    memtrace.hpp
+    memtrace.cpp
 )
 target_link_libraries (trace
     common
+    guids
+    crc32c
     ${SNAPPY_LIBRARIES}
+)
+
+# Code shared across all OpenGL variants
+add_convenience_library (gltrace_common
+    glcaps.cpp
+    config.cpp
+    gltrace_arrays.cpp
+    gltrace_state.cpp
+)
+add_dependencies (gltrace_common glproc)
+target_link_libraries (gltrace_common
+    glhelpers
+    trace
 )
 
 if (WIN32)
@@ -150,7 +185,7 @@ if (WIN32)
                 ${CMAKE_SOURCE_DIR}/specs/d3d9.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d9types.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d9caps.py
-                ${CMAKE_SOURCE_DIR}/specs/d3d9dxva2.py
+                ${CMAKE_SOURCE_DIR}/specs/dxva2.py
                 ${CMAKE_SOURCE_DIR}/specs/winapi.py
                 ${CMAKE_SOURCE_DIR}/specs/stdapi.py
         )
@@ -172,8 +207,8 @@ if (WIN32)
     endif ()
 
     # dxgi.dll, d3d10.dll, d3d10_1.dll, d3d11.dll
-    if (DirectX_D3D11_2_INCLUDE_FOUND)
-        include_directories (BEFORE SYSTEM ${DirectX_D3D11_2_INCLUDE_DIR})
+    if (DirectX_D3D11_3_INCLUDE_FOUND)
+        include_directories (BEFORE SYSTEM ${DirectX_D3D11_3_INCLUDE_DIR})
 
         add_custom_command (
             OUTPUT dxgitrace.cpp
@@ -184,10 +219,10 @@ if (WIN32)
                 trace.py
                 ${CMAKE_SOURCE_DIR}/dispatch/dispatch.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d11.py
+                ${CMAKE_SOURCE_DIR}/specs/dcomp.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d11sdklayers.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d10.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d10sdklayers.py
-                ${CMAKE_SOURCE_DIR}/specs/d3dcommon.py
                 ${CMAKE_SOURCE_DIR}/specs/dxgi.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d9.py
                 ${CMAKE_SOURCE_DIR}/specs/winapi.py
@@ -210,19 +245,17 @@ if (WIN32)
     endif ()
 
     # d2d1.dll, dwrite.dll
-    if (DirectX_D2D1_INCLUDE_FOUND)
-        include_directories (BEFORE SYSTEM ${DirectX_D2D1_INCLUDE_DIR})
+    if (DirectX_D2D1_1_INCLUDE_FOUND)
+        include_directories (BEFORE SYSTEM ${DirectX_D2D1_1_INCLUDE_DIR})
 
         add_custom_command (
             OUTPUT d2d1trace.cpp
             COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/d2d1trace.py > ${CMAKE_CURRENT_BINARY_DIR}/d2d1trace.cpp
             DEPENDS
                 d2d1trace.py
+                dlltrace.py
                 trace.py
                 ${CMAKE_SOURCE_DIR}/specs/d2d1.py
-                ${CMAKE_SOURCE_DIR}/specs/d2d1.py
-                ${CMAKE_SOURCE_DIR}/specs/d2dbasetypes.py
-                ${CMAKE_SOURCE_DIR}/specs/d2derr.py
                 ${CMAKE_SOURCE_DIR}/specs/dwrite.py
                 ${CMAKE_SOURCE_DIR}/specs/dcommon.py
                 ${CMAKE_SOURCE_DIR}/specs/dxgi.py
@@ -238,7 +271,7 @@ if (WIN32)
         )
         install (TARGETS d2d1trace LIBRARY DESTINATION ${WRAPPER_INSTALL_DIR})
         install_pdb (d2d1trace DESTINATION ${WRAPPER_INSTALL_DIR})
-    endif (DirectX_D2D1_INCLUDE_FOUND)
+    endif ()
 
     # opengl32.dll
     add_custom_command (
@@ -247,6 +280,7 @@ if (WIN32)
         DEPENDS
                 wgltrace.py
                 gltrace.py
+                dlltrace.py
                 trace.py
                 ${CMAKE_SOURCE_DIR}/dispatch/dispatch.py
                 ${CMAKE_SOURCE_DIR}/specs/wglapi.py
@@ -259,15 +293,11 @@ if (WIN32)
     )
     add_library (wgltrace MODULE opengl32.def
         wgltrace.cpp
-        glcaps.cpp
-        config.cpp
-        gltrace_state.cpp
     )
     add_dependencies (wgltrace glproc)
     target_link_libraries (wgltrace
-        glhelpers
+        gltrace_common
         glproc_gl
-        trace
     )
     set_target_properties (wgltrace PROPERTIES
         PREFIX ""
@@ -295,9 +325,6 @@ elseif (APPLE)
 
     add_library (cgltrace SHARED
         cgltrace.cpp
-        glcaps.cpp
-        config.cpp
-        gltrace_state.cpp
     )
 
     add_dependencies (cgltrace glproc)
@@ -312,9 +339,8 @@ elseif (APPLE)
     )
 
     target_link_libraries (cgltrace
-        glhelpers
+        gltrace_common
         glproc_gl
-        trace
         ${CMAKE_THREAD_LIBS_INIT}
         ${CMAKE_DL_LIBS}
     )
@@ -339,9 +365,6 @@ elseif (X11_FOUND)
 
     add_library (glxtrace SHARED
         glxtrace.cpp
-        glcaps.cpp
-        config.cpp
-        gltrace_state.cpp
         dlsym.cpp
     )
 
@@ -350,16 +373,11 @@ elseif (X11_FOUND)
     set_target_properties (glxtrace PROPERTIES
         # avoid the default "lib" prefix
         PREFIX ""
-        # Prevent symbol relocations internal to our wrapper library to be
-        # overwritten by the application.  And fail if there are missing
-        # symbols.
-        LINK_FLAGS "-Wl,-Bsymbolic -Wl,-Bsymbolic-functions -Wl,-z,defs"
     )
 
     target_link_libraries (glxtrace
-        glhelpers
+        gltrace_common
         glproc_gl
-        trace
         ${CMAKE_THREAD_LIBS_INIT}
         ${CMAKE_DL_LIBS}
     )
@@ -390,9 +408,6 @@ if (ENABLE_EGL AND NOT WIN32 AND NOT APPLE)
 
     add_library (egltrace SHARED
         egltrace.cpp
-        glcaps.cpp
-        config.cpp
-        gltrace_state.cpp
         dlsym.cpp
     )
 
@@ -401,16 +416,11 @@ if (ENABLE_EGL AND NOT WIN32 AND NOT APPLE)
     set_target_properties (egltrace PROPERTIES
         # avoid the default "lib" prefix
         PREFIX ""
-        # Prevent symbol relocations internal to our wrapper library to be
-        # overwritten by the application.  And fail if there are missing
-        # symbols.
-        LINK_FLAGS "-Wl,-Bsymbolic -Wl,-Bsymbolic-functions -Wl,-z,defs"
     )
 
     target_link_libraries (egltrace
-        glhelpers
+        gltrace_common
         glproc_egl
-        trace
         ${CMAKE_THREAD_LIBS_INIT}
         ${CMAKE_DL_LIBS}
     )

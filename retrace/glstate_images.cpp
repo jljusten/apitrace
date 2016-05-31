@@ -96,17 +96,21 @@ struct ImageDesc
 };
 
 
+static GLenum
+getTextureTarget(Context &context, GLuint texture);
+
+
 /**
  * OpenGL ES does not support glGetTexLevelParameteriv, but it is possible to
  * probe whether a texture has a given size by crafting a dummy glTexSubImage()
  * call.
  */
 static bool
-probeTextureLevelSizeOES(GLenum target, GLint level, const GLint size[3]) {
+probeTextureLevelSizeOES(GLenum target, GLint level, const GLint size[3],
+                         GLenum internalFormat, GLenum type)
+{
     flushErrors();
 
-    GLenum internalFormat = GL_RGBA;
-    GLenum type = GL_UNSIGNED_BYTE;
     GLint dummy = 0;
 
     switch (target) {
@@ -144,13 +148,49 @@ probeTextureLevelSizeOES(GLenum target, GLint level, const GLint size[3]) {
 }
 
 
+static bool
+probeTextureFormatOES(GLenum target, GLint level,
+                      GLenum *internalFormat, GLenum *type)
+{
+    static const struct {
+        GLenum internalFormat;
+        GLenum type;
+    } info[] = {
+        /* internalFormat */        /* type */
+        { GL_RGBA,                  GL_UNSIGNED_BYTE },
+        { GL_DEPTH_STENCIL,         GL_FLOAT_32_UNSIGNED_INT_24_8_REV },
+        { GL_DEPTH_STENCIL,         GL_UNSIGNED_INT_24_8 },
+        { GL_DEPTH_COMPONENT,       GL_FLOAT },
+        { GL_DEPTH_COMPONENT,       GL_UNSIGNED_SHORT },
+        { GL_STENCIL_INDEX,         GL_UNSIGNED_BYTE },
+        /* others? */
+        { 0, 0 },
+    };
+    static const GLint size[3] = {1, 1, 1};
+
+    for (int i = 0; info[i].internalFormat; i++) {
+        if (probeTextureLevelSizeOES(target, level, size,
+                                     info[i].internalFormat,
+                                     info[i].type)) {
+            *internalFormat = info[i].internalFormat;
+            *type = info[i].type;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
 /**
  * Bisect the texture size along an axis.
  *
  * It is assumed that the texture exists.
  */
 static GLint
-bisectTextureLevelSizeOES(GLenum target, GLint level, GLint axis, GLint max) {
+bisectTextureLevelSizeOES(GLenum target, GLint level, GLint axis, GLint max,
+                          GLenum internalFormat, GLenum type)
+{
     GLint size[3] = {0, 0, 0};
 
     assert(axis < 3);
@@ -165,7 +205,7 @@ bisectTextureLevelSizeOES(GLenum target, GLint level, GLint axis, GLint max) {
 
         size[axis] = test;
 
-        if (probeTextureLevelSizeOES(target, level, size)) {
+        if (probeTextureLevelSizeOES(target, level, size, internalFormat, type)) {
             min = test;
         } else {
             max = test;
@@ -185,21 +225,20 @@ getActiveTextureLevelDescOES(Context &context, GLenum target, GLint level, Image
         // OpenGL ES does not support 1D textures
         return false;
     }
+    GLenum internalFormat, type;
 
-    const GLint size[3] = {1, 1, 1}; 
-    if (!probeTextureLevelSizeOES(target, level, size)) {
+    if (!probeTextureFormatOES(target, level, &internalFormat, &type)) {
         return false;
     }
 
-    // XXX: mere guess
-    desc.internalFormat = GL_RGBA;
+    desc.internalFormat = internalFormat;
 
     GLint maxSize = 0;
     switch (target) {
     case GL_TEXTURE_2D:
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxSize);
-        desc.width = bisectTextureLevelSizeOES(target, level, 0, maxSize);
-        desc.height = bisectTextureLevelSizeOES(target, level, 1, maxSize);
+        desc.width = bisectTextureLevelSizeOES(target, level, 0, maxSize, internalFormat, type);
+        desc.height = bisectTextureLevelSizeOES(target, level, 1, maxSize, internalFormat, type);
         desc.depth = 1;
         break;
     case GL_TEXTURE_CUBE_MAP:
@@ -210,15 +249,15 @@ getActiveTextureLevelDescOES(Context &context, GLenum target, GLint level, Image
     case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
     case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
         glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE, &maxSize);
-        desc.width = bisectTextureLevelSizeOES(target, level, 0, maxSize);
+        desc.width = bisectTextureLevelSizeOES(target, level, 0, maxSize, internalFormat, type);
         desc.height = desc.width;
         desc.depth = 1;
         break;
     case GL_TEXTURE_3D_OES:
         glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE_OES, &maxSize);
-        desc.width = bisectTextureLevelSizeOES(target, level, 0, maxSize);
-        desc.width = bisectTextureLevelSizeOES(target, level, 1, maxSize);
-        desc.depth = bisectTextureLevelSizeOES(target, level, 2, maxSize);
+        desc.width = bisectTextureLevelSizeOES(target, level, 0, maxSize, internalFormat, type);
+        desc.width = bisectTextureLevelSizeOES(target, level, 1, maxSize, internalFormat, type);
+        desc.depth = bisectTextureLevelSizeOES(target, level, 2, maxSize, internalFormat, type);
         break;
     default:
         return false;
@@ -268,14 +307,13 @@ getActiveTextureLevelDesc(Context &context, GLenum target, GLint level, ImageDes
 
         const InternalFormatDesc &formatDesc = getInternalFormatDesc(desc.internalFormat);
         if (formatDesc.type == GL_NONE) {
-            assert(0);
+            std::cerr << "error: unexpected GL_TEXTURE_BUFFER internal format "
+                      << enumToString(desc.internalFormat)
+                      << " (https://github.com/apitrace/apitrace/issues/426)\n";
             return false;
-
         }
 
-        unsigned bits_per_element;
-        unsigned bits_per_pixel;
-        _gl_format_size(formatDesc.format, formatDesc.type, bits_per_element, bits_per_pixel);
+        unsigned bits_per_pixel = _gl_format_size(formatDesc.format, formatDesc.type);
 
         desc.width = buffer_size * 8 / bits_per_pixel;
         desc.height = 1;
@@ -376,7 +414,8 @@ getTextureBinding(GLenum target)
  * texture to a framebuffer.
  */
 static inline void
-getTexImageOES(GLenum target, GLint level, ImageDesc &desc, GLubyte *pixels)
+getTexImageOES(GLenum target, GLint level, GLenum format, GLenum type,
+               ImageDesc &desc, GLubyte *pixels)
 {
     memset(pixels, 0x80, desc.height * desc.width * 4);
 
@@ -412,12 +451,12 @@ getTexImageOES(GLenum target, GLint level, ImageDesc &desc, GLubyte *pixels)
         if (status != GL_FRAMEBUFFER_COMPLETE) {
             std::cerr << __FUNCTION__ << ": " << enumToString(status) << "\n";
         }
-        glReadPixels(0, 0, desc.width, desc.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        glReadPixels(0, 0, desc.width, desc.height, format, type, pixels);
         break;
     case GL_TEXTURE_3D_OES:
         for (int i = 0; i < desc.depth; i++) {
             glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_3D, texture, level, i);
-            glReadPixels(0, 0, desc.width, desc.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels + 4 * i * desc.width * desc.height);
+            glReadPixels(0, 0, desc.width, desc.height, format, type, pixels + 4 * i * desc.width * desc.height);
         }
         break;
     }
@@ -498,7 +537,7 @@ dumpActiveTextureLevel(StateWriter &writer, Context &context,
         }
     } else {
         if (context.ES) {
-            getTexImageOES(target, level, desc, image->pixels);
+            getTexImageOES(target, level, format, type, desc, image->pixels);
         } else {
             glGetTexImage(target, level, format, type, image->pixels);
         }
@@ -571,6 +610,49 @@ finished:
     free(object_label);
 }
 
+static void
+dumpTextureImages(StateWriter &writer, Context &context)
+{
+    if (!context.ARB_shader_image_load_store) {
+        return;
+    }
+
+    GLint maxImageUnits = 0;
+    glGetIntegerv(GL_MAX_IMAGE_UNITS, &maxImageUnits);
+    glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+
+    for (GLint imageUnit = 0; imageUnit < maxImageUnits; ++imageUnit) {
+        GLint texture = 0;
+        glGetIntegeri_v(GL_IMAGE_BINDING_NAME, imageUnit, &texture);
+        if (texture) {
+            GLint level = 0;
+            glGetIntegeri_v(GL_IMAGE_BINDING_LEVEL, imageUnit, &level);
+            GLint isLayered = 0;
+            glGetIntegeri_v(GL_IMAGE_BINDING_LAYERED, imageUnit, &isLayered);
+            GLint layer = 0;
+            glGetIntegeri_v(GL_IMAGE_BINDING_LAYER, imageUnit, &layer);
+            std::stringstream label;
+            label << "Image Unit " << imageUnit;
+            if (level) {
+                label << ", level = " << level;
+            }
+            if (isLayered) {
+                label << ", layer = " << layer;
+            }
+            GLenum target = getTextureTarget(context, texture);
+            GLint previousTexture = 0;
+            glGetIntegerv(getTextureBinding(target), &previousTexture);
+
+            glBindTexture(target, texture);
+            char *object_label = getObjectLabel(context, GL_TEXTURE, texture);
+            dumpActiveTextureLevel(writer, context, target, level, label.str(),
+                                   object_label);
+            free(object_label);
+            glBindTexture(target, previousTexture);
+        }
+    }
+}
+
 
 void
 dumpTextures(StateWriter &writer, Context &context)
@@ -602,8 +684,7 @@ dumpTextures(StateWriter &writer, Context &context)
         GLenum texture = GL_TEXTURE0 + unit;
         glActiveTexture(texture);
 
-        for (unsigned i = 0; i < numTextureTargets; ++i) {
-            GLenum target = textureTargets[i];
+        for (auto target : textureTargets) {
 
             // Whether this fixed-function stage is enabled
             GLboolean enabled = GL_FALSE;
@@ -630,6 +711,8 @@ dumpTextures(StateWriter &writer, Context &context)
     }
 
     glActiveTexture(active_texture);
+
+    dumpTextureImages(writer, context);
 
     writer.endObject();
     writer.endMember(); // textures
@@ -708,10 +791,7 @@ getDrawableBounds(GLint *width, GLint *height) {
 #elif defined(HAVE_X11)
 
     Display *display;
-    Drawable drawable;
-    Window root;
-    int x, y;
-    unsigned int w, h, bw, depth;
+    GLXDrawable drawable;
 
     display = glXGetCurrentDisplay();
     if (!display) {
@@ -723,9 +803,11 @@ getDrawableBounds(GLint *width, GLint *height) {
         return false;
     }
 
-    if (!XGetGeometry(display, drawable, &root, &x, &y, &w, &h, &bw, &depth)) {
-        return false;
-    }
+    // XGetGeometry will fail for PBuffers, whereas glXQueryDrawable should not.
+    unsigned int w = 0;
+    unsigned int h = 0;
+    glXQueryDrawable(display, drawable, GLX_WIDTH, &w);
+    glXQueryDrawable(display, drawable, GLX_HEIGHT, &h);
 
     *width = w;
     *height = h;
@@ -740,46 +822,52 @@ getDrawableBounds(GLint *width, GLint *height) {
 
 
 static GLenum
-getTextureTarget(Context &context, GLint texture)
+getTextureTarget(Context &context, GLuint texture)
 {
     if (!glIsTexture(texture)) {
         return GL_NONE;
     }
 
-    flushErrors();
+    GLint result = GL_NONE;
+    if (context.ARB_direct_state_access) {
 
-    // Temporarily disable debug messages
-    GLDEBUGPROC prevDebugCallbackFunction = 0;
-    void *prevDebugCallbackUserParam = 0;
-    if (context.KHR_debug) {
-        glGetPointerv(GL_DEBUG_CALLBACK_FUNCTION, (GLvoid **) &prevDebugCallbackFunction);
-        glGetPointerv(GL_DEBUG_CALLBACK_USER_PARAM, &prevDebugCallbackUserParam);
-        glDebugMessageCallback(NULL, NULL);
-    }
+        glGetTextureParameteriv(texture, GL_TEXTURE_TARGET, &result);
+        assert(result != GL_NONE);
 
-    GLenum result = GL_NONE;
-    for (unsigned i = 0; i < numTextureTargets; ++i) {
-        GLenum target = textureTargets[i];
-        GLenum binding = getTextureBinding(target);
+    } else {
+        flushErrors();
 
-        GLint bound_texture = 0;
-        glGetIntegerv(binding, &bound_texture);
-        glBindTexture(target, texture);
-
-        bool succeeded = glGetError() == GL_NO_ERROR;
-
-        glBindTexture(target, bound_texture);
-
-        if (succeeded) {
-            result = target;
-            break;
+        // Temporarily disable debug messages
+        GLDEBUGPROC prevDebugCallbackFunction = 0;
+        void *prevDebugCallbackUserParam = 0;
+        if (context.KHR_debug) {
+            glGetPointerv(GL_DEBUG_CALLBACK_FUNCTION, (GLvoid **) &prevDebugCallbackFunction);
+            glGetPointerv(GL_DEBUG_CALLBACK_USER_PARAM, &prevDebugCallbackUserParam);
+            glDebugMessageCallback(NULL, NULL);
         }
 
-        flushErrors();
-    }
+        for (auto target : textureTargets) {
+            GLenum binding = getTextureBinding(target);
 
-    if (context.KHR_debug) {
-        glDebugMessageCallback(prevDebugCallbackFunction, prevDebugCallbackUserParam);
+            GLint bound_texture = 0;
+            glGetIntegerv(binding, &bound_texture);
+            glBindTexture(target, texture);
+
+            bool succeeded = glGetError() == GL_NO_ERROR;
+
+            glBindTexture(target, bound_texture);
+
+            if (succeeded) {
+                result = target;
+                break;
+            }
+
+            flushErrors();
+        }
+
+        if (context.KHR_debug) {
+            glDebugMessageCallback(prevDebugCallbackFunction, prevDebugCallbackUserParam);
+        }
     }
 
     return result;
@@ -873,21 +961,23 @@ getFramebufferAttachmentDesc(Context &context, GLenum target, GLenum attachment,
 
 
 image::Image *
-getDrawBufferImage() {
+getDrawBufferImage()
+{
     Context context;
 
     GLenum framebuffer_binding;
     GLenum framebuffer_target;
-    if (context.ES) {
-        framebuffer_binding = GL_FRAMEBUFFER_BINDING;
-        framebuffer_target = GL_FRAMEBUFFER;
-    } else {
+    if (context.read_framebuffer_object) {
         framebuffer_binding = GL_DRAW_FRAMEBUFFER_BINDING;
         framebuffer_target = GL_DRAW_FRAMEBUFFER;
+    } else {
+        framebuffer_binding = GL_FRAMEBUFFER_BINDING;
+        framebuffer_target = GL_FRAMEBUFFER;
     }
-
     GLint draw_framebuffer = 0;
-    glGetIntegerv(framebuffer_binding, &draw_framebuffer);
+    if (context.framebuffer_object) {
+        glGetIntegerv(framebuffer_binding, &draw_framebuffer);
+    }
 
     GLint draw_buffer = GL_NONE;
     ImageDesc desc;
@@ -954,10 +1044,12 @@ getDrawBufferImage() {
 
     GLint read_framebuffer = 0;
     GLint read_buffer = GL_NONE;
-    if (!context.ES) {
+    if (context.read_framebuffer_object) {
         glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_framebuffer);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, draw_framebuffer);
+    }
 
+    if (context.read_buffer) {
         glGetIntegerv(GL_READ_BUFFER, &read_buffer);
         glReadBuffer(draw_buffer);
     }
@@ -969,8 +1061,10 @@ getDrawBufferImage() {
     }
 
 
-    if (!context.ES) {
+    if (context.read_buffer) {
         glReadBuffer(read_buffer);
+    }
+    if (context.read_framebuffer_object) {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, read_framebuffer);
     }
 
@@ -1004,10 +1098,33 @@ dumpReadBufferImage(StateWriter &writer,
         internalFormat = format;
     }
 
-    // On GLES glReadPixels only supports GL_RGBA and GL_UNSIGNED_BYTE combination
     if (context.ES) {
-        format = GL_RGBA;
-        type = GL_UNSIGNED_BYTE;
+        switch (format) {
+        case GL_DEPTH_COMPONENT:
+        case GL_DEPTH_STENCIL:
+            if (!context.NV_read_depth_stencil) {
+                return;
+            }
+            /* FIXME: NV_read_depth_stencil states that type must match the
+             * internal format, whereas we always request GL_FLOAT, as that's
+             * what we want.  To fix this we should probe the adequate type
+             * here, and then manually convert the pixels to float after
+             * glReadPixels */
+            break;
+        case GL_STENCIL_INDEX:
+            if (!context.NV_read_depth_stencil) {
+                return;
+            }
+            type = GL_UNSIGNED_BYTE;
+            break;
+        default:
+            // Color formats -- GLES glReadPixels only supports the following combinations:
+            // - GL_RGBA and GL_UNSIGNED_BYTE
+            // - values of IMPLEMENTATION_COLOR_READ_FORMAT and IMPLEMENTATION_COLOR_READ_TYPE
+            format = GL_RGBA;
+            type = GL_UNSIGNED_BYTE;
+            break;
+        }
     }
 
     GLuint channels;
@@ -1175,18 +1292,18 @@ dumpDrawableImages(StateWriter &writer, Context &context)
 
     // Reset read framebuffer
     GLint read_framebuffer = 0;
-    if (context.ES) {
-        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &read_framebuffer);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    } else {
+    if (context.read_framebuffer_object) {
         glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_framebuffer);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    } else if (context.framebuffer_object) {
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &read_framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
     if (draw_buffer != GL_NONE) {
         // Read from current draw buffer
         GLint read_buffer = GL_NONE;
-        if (!context.ES) {
+        if (context.read_buffer) {
             glGetIntegerv(GL_READ_BUFFER, &read_buffer);
             glReadBuffer(draw_buffer);
         }
@@ -1202,12 +1319,12 @@ dumpDrawableImages(StateWriter &writer, Context &context)
         dumpReadBufferImage(writer, context, enumToString(draw_buffer), NULL, width, height, format, type);
 
         // Restore original read buffer
-        if (!context.ES) {
+        if (context.read_buffer) {
             glReadBuffer(read_buffer);
         }
     }
 
-    if (!context.ES) {
+    if (!context.ES || context.NV_read_depth_stencil) {
         GLint depth_bits = 0;
         if (context.core) {
             glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_DEPTH, GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &depth_bits);
@@ -1231,10 +1348,10 @@ dumpDrawableImages(StateWriter &writer, Context &context)
     }
     
     // Restore original read framebuffer
-    if (context.ES) {
-        glBindFramebuffer(GL_FRAMEBUFFER, read_framebuffer);
-    } else {
+    if (context.read_framebuffer_object) {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, read_framebuffer);
+    } else if (context.framebuffer_object) {
+        glBindFramebuffer(GL_FRAMEBUFFER, read_framebuffer);
     }
 }
 
@@ -1366,7 +1483,7 @@ dumpFramebufferAttachments(StateWriter &writer, Context &context, GLenum target)
 
     glReadBuffer(read_buffer);
 
-    if (!context.ES) {
+    if (!context.ES || context.NV_read_depth_stencil) {
         dumpFramebufferAttachment(writer, context, target, GL_DEPTH_ATTACHMENT);
         dumpFramebufferAttachment(writer, context, target, GL_STENCIL_ATTACHMENT);
     }

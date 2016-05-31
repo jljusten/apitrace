@@ -41,27 +41,11 @@
 namespace glstate {
 
 
-Context::Context(void) {
-    memset(this, 0, sizeof *this);
-
-    glprofile::Profile profile = glprofile::getCurrentContextProfile();
-    glprofile::Extensions ext;
-
-    ext.getCurrentContextExtensions(profile);
-
-    ES = profile.es();
-    core = profile.core;
-
-    ARB_draw_buffers = !ES;
-
-    // Check extensions we use.
-    ARB_sampler_objects = ext.has("GL_ARB_sampler_objects");
-    KHR_debug = ext.has("GL_KHR_debug");
-    EXT_debug_label = ext.has("GL_EXT_debug_label");
-}
-
-PixelPackState::PixelPackState(const Context &context) {
-    ES = context.ES;
+PixelPackState::PixelPackState(const Context &context)
+{
+    desktop = !context.ES;
+    texture_3d = context.texture_3d;
+    pixel_buffer_object = context.pixel_buffer_object;
 
     // Start with default state
     pack_alignment = 4;
@@ -76,41 +60,53 @@ PixelPackState::PixelPackState(const Context &context) {
 
     // Get current state
     glGetIntegerv(GL_PACK_ALIGNMENT, &pack_alignment);
-    if (!ES) {
-        glGetIntegerv(GL_PACK_IMAGE_HEIGHT, &pack_image_height);
+    if (desktop) {
         glGetIntegerv(GL_PACK_LSB_FIRST, &pack_lsb_first);
         glGetIntegerv(GL_PACK_ROW_LENGTH, &pack_row_length);
-        glGetIntegerv(GL_PACK_SKIP_IMAGES, &pack_skip_images);
         glGetIntegerv(GL_PACK_SKIP_PIXELS, &pack_skip_pixels);
         glGetIntegerv(GL_PACK_SKIP_ROWS, &pack_skip_rows);
         glGetIntegerv(GL_PACK_SWAP_BYTES, &pack_swap_bytes);
+        if (texture_3d) {
+            glGetIntegerv(GL_PACK_IMAGE_HEIGHT, &pack_image_height);
+            glGetIntegerv(GL_PACK_SKIP_IMAGES, &pack_skip_images);
+        }
+    }
+    if (pixel_buffer_object) {
         glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pixel_pack_buffer_binding);
     }
 
     // Reset state for compact images
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    if (!ES) {
-        glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0);
+    if (desktop) {
         glPixelStorei(GL_PACK_LSB_FIRST, GL_FALSE);
         glPixelStorei(GL_PACK_ROW_LENGTH, 0);
-        glPixelStorei(GL_PACK_SKIP_IMAGES, 0);
         glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
         glPixelStorei(GL_PACK_SKIP_ROWS, 0);
         glPixelStorei(GL_PACK_SWAP_BYTES, GL_FALSE);
+        if (texture_3d) {
+            glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0);
+            glPixelStorei(GL_PACK_SKIP_IMAGES, 0);
+        }
+    }
+    if (pixel_buffer_object) {
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     }
 }
 
 PixelPackState::~PixelPackState() {
     glPixelStorei(GL_PACK_ALIGNMENT, pack_alignment);
-    if (!ES) {
-        glPixelStorei(GL_PACK_IMAGE_HEIGHT, pack_image_height);
+    if (desktop) {
         glPixelStorei(GL_PACK_LSB_FIRST, pack_lsb_first);
         glPixelStorei(GL_PACK_ROW_LENGTH, pack_row_length);
-        glPixelStorei(GL_PACK_SKIP_IMAGES, pack_skip_images);
         glPixelStorei(GL_PACK_SKIP_PIXELS, pack_skip_pixels);
         glPixelStorei(GL_PACK_SKIP_ROWS, pack_skip_rows);
         glPixelStorei(GL_PACK_SWAP_BYTES, pack_swap_bytes);
+        if (texture_3d) {
+            glPixelStorei(GL_PACK_IMAGE_HEIGHT, pack_image_height);
+            glPixelStorei(GL_PACK_SKIP_IMAGES, pack_skip_images);
+        }
+    }
+    if (pixel_buffer_object) {
         glBindBuffer(GL_PIXEL_PACK_BUFFER, pixel_pack_buffer_binding);
     }
 }
@@ -185,6 +181,10 @@ BufferMapping::BufferMapping() :
 GLvoid *
 BufferMapping::map(GLenum _target, GLuint _buffer)
 {
+    if (target == _target && buffer == _buffer) {
+        return map_pointer;
+    }
+
     target = _target;
     buffer = _buffer;
     map_pointer = NULL;
@@ -377,6 +377,15 @@ static void APIENTRY
 debugMessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity,
                      GLsizei length, const GLchar* message, const void *userParam)
 {
+    // Ignore NVIDIA buffer usage warnings: when dumping we inevitably use
+    // buffers differently than declared
+    if (source == GL_DEBUG_SOURCE_API &&
+        type == GL_DEBUG_TYPE_OTHER &&
+        id == 131188 &&
+        severity == GL_DEBUG_SEVERITY_LOW) {
+        return;
+    };
+
     const char *severityStr = "";
     switch (severity) {
     case GL_DEBUG_SEVERITY_HIGH:

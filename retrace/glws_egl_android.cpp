@@ -124,12 +124,12 @@ private:
 };
 
 static EGLenum
-translateAPI(glprofile::Profile profile)
+translateAPI(glfeatures::Profile profile)
 {
     switch (profile.api) {
-    case glprofile::API_GL:
+    case glfeatures::API_GL:
         return EGL_OPENGL_API;
-    case glprofile::API_GLES:
+    case glfeatures::API_GLES:
         return EGL_OPENGL_ES_API;
     default:
         assert(0);
@@ -184,8 +184,8 @@ struct ResourceTracker
 class EglDrawable : public Drawable, private ResourceTracker
 {
 public:
-    EglDrawable(const Visual *vis, int w, int h, bool pbuffer) :
-        Drawable(vis, w, h, pbuffer),
+    EglDrawable(const Visual *vis, int w, int h, const pbuffer_info *info) :
+        Drawable(vis, w, h, info),
         api(EGL_OPENGL_ES_API),
         windowId(0)
     {
@@ -348,12 +348,12 @@ cleanup(void) {
 Visual *
 createVisual(bool doubleBuffer, unsigned samples, Profile profile) {
     EGLint api_bits;
-    if (profile.api == glprofile::API_GL) {
+    if (profile.api == glfeatures::API_GL) {
         api_bits = EGL_OPENGL_BIT;
         if (profile.core && !has_EGL_KHR_create_context) {
             return NULL;
         }
-    } else if (profile.api == glprofile::API_GLES) {
+    } else if (profile.api == glfeatures::API_GLES) {
         switch (profile.major) {
         case 1:
             api_bits = EGL_OPENGL_ES_BIT;
@@ -442,9 +442,10 @@ createVisual(bool doubleBuffer, unsigned samples, Profile profile) {
 }
 
 Drawable *
-createDrawable(const Visual *visual, int width, int height, bool pbuffer)
+createDrawable(const Visual *visual, int width, int height,
+               const pbuffer_info *info)
 {
-    return new EglDrawable(visual, width, height, pbuffer);
+    return new EglDrawable(visual, width, height, info);
 }
 
 
@@ -462,7 +463,7 @@ createContext(const Visual *_visual, Context *shareContext, bool debug)
     }
 
     int contextFlags = 0;
-    if (profile.api == glprofile::API_GL) {
+    if (profile.api == glfeatures::API_GL) {
         if (has_EGL_KHR_create_context) {
             attribs.add(EGL_CONTEXT_MAJOR_VERSION_KHR, profile.major);
             attribs.add(EGL_CONTEXT_MINOR_VERSION_KHR, profile.minor);
@@ -475,7 +476,7 @@ createContext(const Visual *_visual, Context *shareContext, bool debug)
             std::cerr << "error: EGL_KHR_create_context not supported\n";
             return NULL;
         }
-    } else if (profile.api == glprofile::API_GLES) {
+    } else if (profile.api == glfeatures::API_GLES) {
         if (has_EGL_KHR_create_context) {
             attribs.add(EGL_CONTEXT_MAJOR_VERSION_KHR, profile.major);
             attribs.add(EGL_CONTEXT_MINOR_VERSION_KHR, profile.minor);
@@ -512,7 +513,7 @@ createContext(const Visual *_visual, Context *shareContext, bool debug)
 }
 
 bool
-makeCurrent(Drawable *drawable, Context *context)
+makeCurrentInternal(Drawable *drawable, Context *context)
 {
     if (!drawable || !context) {
         return eglMakeCurrent(eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -538,6 +539,27 @@ makeCurrent(Drawable *drawable, Context *context)
 bool processEvents(void)
 {
     return false;
+}
+
+bool
+bindTexImage(Drawable *pBuffer, int iBuffer) {
+    std::cerr << "error: EGL/Android::wglBindTexImageARB not implemented.\n";
+    assert(pBuffer->pbuffer);
+    return true;
+}
+
+bool
+releaseTexImage(Drawable *pBuffer, int iBuffer) {
+    std::cerr << "error: EGL/Android::wglReleaseTexImageARB not implemented.\n";
+    assert(pBuffer->pbuffer);
+    return true;
+}
+
+bool
+setPbufferAttrib(Drawable *pBuffer, const int *attribList) {
+    // nothing to do here.
+    assert(pBuffer->pbuffer);
+    return true;
 }
 
 static void readParamsAndStartTrace()
