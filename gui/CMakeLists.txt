@@ -1,3 +1,12 @@
+# CMake will throw a cryptic message if an user unwittingly invokes it from
+# this directory.
+if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    message (FATAL_ERROR
+        "qapitrace must be built from the top source directory.\n"
+        "Read docs/INSTALL.markdown for detailed build instructions."
+    )
+endif ()
+
 add_definitions (-DQT_FORCE_ASSERTS)
 
 if (APPLE)
@@ -9,10 +18,8 @@ add_library (qubjson STATIC
     qubjson.cpp
 )
 
-add_executable (qubjson_test qubjson_test.cpp)
-target_link_libraries (qubjson_test qubjson gtest)
-add_dependencies (check qubjson_test)
-add_test (NAME qubjson_test COMMAND $<TARGET_FILE:qubjson_test>)
+add_gtest (qubjson_test qubjson_test.cpp)
+target_link_libraries (qubjson_test qubjson)
 
 set(qapitrace_SRCS
    androiddevicedialog.cpp
@@ -44,6 +51,7 @@ set(qapitrace_SRCS
    traceprocess.cpp
    trimprocess.cpp
    vertexdatainterpreter.cpp
+   leaktracethread.cpp
    graphing/frameaxiswidget.cpp
    graphing/graphwidget.cpp
    graphing/graphaxiswidget.cpp
@@ -80,8 +88,9 @@ QT5_WRAP_UI(qapitrace_UIS_H ${qapitrace_UIS})
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 #add_app_icon(qapitrace_SRCS ../icons/hi*-qapitrace.png)
-include_directories(
-    ${CMAKE_SOURCE_DIR} # for image/*
+include_directories (
+    ${CMAKE_SOURCE_DIR}/lib/image
+    ${CMAKE_SOURCE_DIR}/lib/ubjson
 )
 
 add_executable (qapitrace ${qapitrace_SRCS} ${qapitrace_UIS_H})
@@ -93,11 +102,11 @@ add_executable (qapitrace ${qapitrace_SRCS} ${qapitrace_UIS_H})
 if (Qt5Core_VERSION_STRING VERSION_LESS 5.2.0)
     qt5_use_modules (qubjson Widgets)
     qt5_use_modules (qubjson_test Widgets)
-    qt5_use_modules (qapitrace Widgets WebKitWidgets)
+    qt5_use_modules (qapitrace Widgets Network)
 else ()
     target_link_libraries (qubjson Qt5::Widgets)
     target_link_libraries (qubjson_test Qt5::Widgets)
-    target_link_libraries (qapitrace Qt5::Widgets Qt5::WebKitWidgets)
+    target_link_libraries (qapitrace Qt5::Widgets Qt5::Network)
 endif ()
 
 target_link_libraries (qapitrace
@@ -125,3 +134,54 @@ endif ()
 install (TARGETS qapitrace RUNTIME DESTINATION bin)
 install_pdb (qapitrace RUNTIME DESTINATION bin)
 #install (FILES qapitrace.desktop DESTINATION ${XDG_APPS_INSTALL_DIR})
+
+# Deployt Qt dependencies
+#
+# See:
+# - http://doc.qt.io/qt-5/windows-deployment.html
+#
+# XXX: windeployqt can fail if there's weird stuff in the Path env var, so we
+# invoke it with a sanitized Path, via `cmake -E env` that was introduced in
+# CMake 3.1.
+if (WIN32 AND NOT CMAKE_CROSSCOMPILING AND NOT CMAKE_VERSION VERSION_LESS 3.1)
+    # http://stackoverflow.com/a/24676432
+    get_target_property (QT_QMAKE_EXECUTABLE Qt5::qmake IMPORTED_LOCATION)
+    get_filename_component (QT_BIN_DIR "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
+    find_program (QT_WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${QT_BIN_DIR}")
+    if (QT_WINDEPLOYQT_EXECUTABLE)
+        file (TO_NATIVE_PATH "${QT_BIN_DIR}" QT_BIN_DIR_NATIVE)
+        # It's safer to use `\` separateors in the Path, but we need to escape them
+        string (REPLACE "\\" "\\\\" QT_BIN_DIR_NATIVE "${QT_BIN_DIR_NATIVE}")
+
+        # windeployqt needs VCINSTALLDIR to copy MSVC Runtime files, but it's
+        # usually not define with MSBuild builds.
+        if ($ENV{VCINSTALLDIR})
+            set (VCINSTALLDIR "$ENV{VCINSTALLDIR}")
+        elseif (MSVC12)
+            set (VCINSTALLDIR "\$ENV{VS120COMNTOOLS}/../../VC")
+        elseif (MSVC14)
+            set (VCINSTALLDIR "\$ENV{VS140COMNTOOLS}/../../VC")
+        else ()
+            message (FATAL_ERROR "Unsupported MSVC version ${MSVC_VERSION}")
+        endif ()
+
+        install (CODE "
+            message (STATUS \"Running Qt Deploy Tool...\")
+            if (CMAKE_INSTALL_CONFIG_NAME STREQUAL \"Debug\")
+                list (APPEND QT_WINDEPLOYQT_FLAGS --debug)
+            elseif (CMAKE_INSTALL_CONFIG_NAME STREQUAL \"RelWithDebInfo\")
+                list (APPEND QT_WINDEPLOYQT_FLAGS --release-with-debug-info)
+            else ()
+                list (APPEND QT_WINDEPLOYQT_FLAGS --release)
+            endif ()
+            execute_process (COMMAND
+                \"${CMAKE_COMMAND}\" -E env
+                \"Path=${QT_BIN_DIR_NATIVE};\$ENV{SystemRoot}\\\\System32;\$ENV{SystemRoot}\"
+                \"VCINSTALLDIR=${VCINSTALLDIR}\"
+                \"${QT_WINDEPLOYQT_EXECUTABLE}\"
+                \${QT_WINDEPLOYQT_FLAGS}
+                \"\${CMAKE_INSTALL_PREFIX}/bin/qapitrace.exe\"
+            )
+        ")
+    endif ()
+endif ()

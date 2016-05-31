@@ -27,64 +27,123 @@
 
 #include "glws.hpp"
 #include "retrace.hpp"
+#include "metric_backend.hpp"
+#include "metric_writer.hpp"
+
+#include "os_thread.hpp"
 
 
 namespace glretrace {
 
-struct Context {
+class Context
+{
+public:
     Context(glws::Context* context)
-        : wsContext(context),
-          drawable(0),
-          activeProgram(0),
-          used(false)
+        : wsContext(context)
     {
     }
 
+private:
+    unsigned refCount = 1;
     ~Context();
+
+public:
+    inline void
+    aquire(void) {
+        assert(refCount);
+        ++refCount;
+    }
+
+    inline void
+    release(void) {
+        assert(refCount);
+        if (--refCount == 0) {
+            delete this;
+        }
+    }
 
     glws::Context* wsContext;
 
     // Bound drawable
-    glws::Drawable *drawable;
+    glws::Drawable *drawable = nullptr;
 
-    GLuint activeProgram;
-    bool used;
-    
-    // Context must be current
+    // Active program (unswizzled) for profiling
+    GLuint currentUserProgram = 0;
+
+    // Current program (swizzled) for uniform swizzling
+    GLuint currentProgram = 0;
+    GLuint currentPipeline = 0;
+
+    bool insideBeginEnd = false;
+    bool insideList = false;
+    bool needsFlush = false;
+
+    bool used = false;
+
+    bool KHR_debug = false;
+    GLsizei maxDebugMessageLength = 0;
+
+    inline glfeatures::Profile
+    profile(void) const {
+        return wsContext->profile;
+    }
+
+    inline glfeatures::Profile
+    actualProfile(void) const {
+        return wsContext->actualProfile;
+    }
+
+    inline const glfeatures::Features &
+    features(void) const {
+        return wsContext->actualFeatures;
+    }
+
     inline bool
     hasExtension(const char *extension) const {
         return wsContext->hasExtension(extension);
     }
 };
 
-extern glprofile::Profile defaultProfile;
+extern bool metricBackendsSetup;
+extern bool profilingContextAcquired;
+extern bool profilingBoundaries[QUERY_BOUNDARY_LIST_END];
+extern unsigned profilingBoundariesIndex[QUERY_BOUNDARY_LIST_END];
+extern std::vector<MetricBackend*> metricBackends;
+extern MetricBackend* curMetricBackend;
+extern MetricWriter profiler;
 
-extern bool insideList;
-extern bool insideGlBeginEnd;
+extern glfeatures::Profile defaultProfile;
+
 extern bool supportsARBShaderObjects;
 
-Context *
-getCurrentContext(void);
+extern OS_THREAD_LOCAL Context *
+currentContextPtr;
+
+
+static inline Context *
+getCurrentContext(void) {
+    return currentContextPtr;
+}
 
 
 int
 parseAttrib(const trace::Value *attribs, int param, int default_ = 0, int terminator = 0);
 
-glprofile::Profile
+glfeatures::Profile
 parseContextAttribList(const trace::Value *attribs);
 
 
 glws::Drawable *
-createDrawable(glprofile::Profile profile);
+createDrawable(glfeatures::Profile profile);
 
 glws::Drawable *
 createDrawable(void);
 
 glws::Drawable *
-createPbuffer(int width, int height);
+createPbuffer(int width, int height, const glws::pbuffer_info *info);
 
 Context *
-createContext(Context *shareContext, glprofile::Profile profile);
+createContext(Context *shareContext, glfeatures::Profile profile);
 
 Context *
 createContext(Context *shareContext = 0);
@@ -96,6 +155,10 @@ makeCurrent(trace::Call &call, glws::Drawable *drawable, Context *context);
 void
 checkGlError(trace::Call &call);
 
+void
+insertCallMarker(trace::Call &call, Context *currentContext);
+
+
 extern const retrace::Entry gl_callbacks[];
 extern const retrace::Entry cgl_callbacks[];
 extern const retrace::Entry glx_callbacks[];
@@ -104,6 +167,8 @@ extern const retrace::Entry egl_callbacks[];
 
 void frame_complete(trace::Call &call);
 void initContext();
+void beforeContextSwitch();
+void afterContextSwitch();
 
 
 void updateDrawable(int width, int height);
@@ -112,11 +177,32 @@ void flushQueries();
 void beginProfile(trace::Call &call, bool isDraw);
 void endProfile(trace::Call &call, bool isDraw);
 
+MetricBackend* getBackend(std::string backendName);
+
+bool isLastPass();
+
+void listMetricsCLI();
+
+void enableMetricsFromCLI(const char* metrics, QueryBoundary pollingRule);
+
 GLenum
 blockOnFence(trace::Call &call, GLsync sync, GLbitfield flags);
 
 GLenum
 clientWaitSync(trace::Call &call, GLsync sync, GLbitfield flags, GLuint64 timeout);
+
+
+// WGL_ARB_render_texture
+bool
+bindTexImage(glws::Drawable *pBuffer, int iBuffer);
+
+// WGL_ARB_render_texture
+bool
+releaseTexImage(glws::Drawable *pBuffer, int iBuffer);
+
+// WGL_ARB_render_texture
+bool
+setPbufferAttrib(glws::Drawable *pBuffer, const int *attribList);
 
 } /* namespace glretrace */
 

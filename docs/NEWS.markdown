@@ -4,6 +4,8 @@ and their authors see the git history.
 
 # Version 7 #
 
+* Native Android retrace with remote GUI
+
 * OpenGL ES 3 support
 
 * GUI ported to Qt5
@@ -37,7 +39,7 @@ and their authors see the git history.
 
 # Version 4 #
 
-* Support tracing in Android, both native and Dalvik applications
+* Support tracing in Android, both native and Java applications
 
 * Show frame thumbnails in the GUI
 

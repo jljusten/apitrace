@@ -30,6 +30,7 @@
 
 #include "glimports.hpp"
 #include "glproc.hpp"
+#include "glfeatures.hpp"
 #include "image.hpp"
 
 
@@ -39,17 +40,12 @@ class StateWriter;
 namespace glstate {
 
 
-struct Context
+struct Context : public glfeatures::Features
 {
-    unsigned ES:1;
-    unsigned core:1;
-
-    unsigned ARB_draw_buffers:1;
-    unsigned ARB_sampler_objects:1;
-    unsigned KHR_debug:1;
-    unsigned EXT_debug_label:1;
-
-    Context(void);
+    inline Context(void)
+    {
+        load();
+    }
 };
 
 
@@ -61,7 +57,9 @@ public:
     ~PixelPackState();
 
 private:
-    bool ES;
+    bool desktop;
+    bool texture_3d;
+    bool pixel_buffer_object;
 
     // Pack state
     GLint pack_alignment;

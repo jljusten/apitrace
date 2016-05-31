@@ -32,10 +32,15 @@
 #include <windows.h>
 #include <tchar.h>
 
-#include "compat.h"
+#include "winsdk_compat.h"
 
-#include <d2d1.h>
-#include <dwrite.h>
+#include <d2d1_1.h>
+#include <d2d1effectauthor.h>  // for D2D1_PROPERTY_BINDING
+#include <dwrite_1.h>
+
+#ifndef WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT
+#define WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT 0x88982f80
+#endif
 
 DEFINE_GUID(IID_ID2D1Resource,0x2cd90691,0x12e2,0x11dc,0x9f,0xed,0x00,0x11,0x43,0xa0,0x55,0xf9);
 DEFINE_GUID(IID_ID2D1Bitmap,0xa2296057,0xea42,0x4099,0x98,0x3b,0x53,0x9f,0xb6,0x50,0x54,0x26);

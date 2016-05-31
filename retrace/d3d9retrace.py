@@ -69,6 +69,16 @@ class D3DRetracer(Retracer):
         'CreateDeviceEx',
     ]
 
+    def doInvokeInterfaceMethod(self, interface, method):
+        Retracer.doInvokeInterfaceMethod(self, interface, method)
+
+        # Keep retrying IDirectXVideoDecoder::BeginFrame when returns E_PENDING
+        if interface.name == 'IDirectXVideoDecoder' and method.name == 'BeginFrame':
+            print r'    while (_result == E_PENDING) {'
+            print r'        Sleep(1);'
+            Retracer.doInvokeInterfaceMethod(self, interface, method)
+            print r'    }'
+
     def invokeInterfaceMethod(self, interface, method):
         # keep track of the last used device for state dumping
         if interface.name in ('IDirect3DDevice9', 'IDirect3DDevice9Ex'):
@@ -88,7 +98,12 @@ class D3DRetracer(Retracer):
 
         # create windows as neccessary
         if method.name in ('CreateDevice', 'CreateDeviceEx', 'CreateAdditionalSwapChain'):
-            print r'    HWND hWnd = d3dretrace::createWindow(pPresentationParameters->BackBufferWidth, pPresentationParameters->BackBufferHeight);'
+            print r'    HWND hWnd = pPresentationParameters->hDeviceWindow;'
+            if 'hFocusWindow' in method.argNames():
+                print r'    if (hWnd == NULL) {'
+                print r'        hWnd = hFocusWindow;'
+                print r'    }'
+            print r'    hWnd = d3dretrace::createWindow(hWnd, pPresentationParameters->BackBufferWidth, pPresentationParameters->BackBufferHeight);'
             print r'    pPresentationParameters->hDeviceWindow = hWnd;'
             if 'hFocusWindow' in method.argNames():
                 print r'    hFocusWindow = hWnd;'
@@ -164,6 +179,8 @@ class D3DRetracer(Retracer):
 
         # notify frame has been completed
         if method.name in ('Present', 'PresentEx'):
+            if interface.name.startswith('IDirect3DSwapChain9'):
+                print r'    d3d9scDumper.bindDevice(_this);'
             print r'    retrace::frameComplete(call);'
             print r'    hDestWindowOverride = NULL;'
 
@@ -176,10 +193,29 @@ class D3DRetracer(Retracer):
             print r'        Usage |= D3DUSAGE_DYNAMIC;'
             print r'    }'
 
-        if 'pSharedHandle' in method.argNames():
+        # Deal with shared surfaces
+        # https://msdn.microsoft.com/en-us/library/windows/desktop/bb219800.aspx
+        # https://msdn.microsoft.com/en-gb/library/windows/desktop/ee913554.aspx
+        pSharedHandleArg = method.getArgByName('pSharedHandle')
+        if pSharedHandleArg:
             print r'    if (pSharedHandle) {'
+            if method.name == 'CreateTexture':
+                # Some applications (e.g., DOTA2) create shared resources within the same process.
+                # https://msdn.microsoft.com/en-us/library/windows/desktop/bb219800.aspx#Textures
+                print r'        if (Pool == D3DPOOL_SYSTEMMEM) {'
+                print r'            // Ensure the memory stays around.'
+                print r'            trace::Blob *blob = call.arg(%u).toArray()->values[0]->toBlob();' % pSharedHandleArg.index
+                print r'            if (blob) {'
+                print r'                blob->toPointer(true);'
+                print r'            } else {'
+                print r'                retrace::warning(call) << "invalid system memory\n";'
+                print r'                pSharedHandle = NULL;'
+                print r'            }'
+                print r'        } else {'
             print r'        retrace::warning(call) << "shared surfaces unsupported\n";'
             print r'        pSharedHandle = NULL;'
+            if method.name == 'CreateTexture':
+                print r'        }'
             print r'    }'
 
         if method.name in ('Lock', 'LockRect', 'LockBox'):
@@ -210,7 +246,12 @@ class D3DRetracer(Retracer):
         if method.name in ('Lock', 'LockRect', 'LockBox'):
             print '    VOID *_pbData = NULL;'
             print '    size_t _MappedSize = 0;'
-            print '    if (!(Flags & D3DLOCK_READONLY)) {'
+            if method.name == 'Lock':
+                # Ignore D3DLOCK_READONLY for buffers.
+                # https://github.com/apitrace/apitrace/issues/435
+                print '    if (true) {'
+            else:
+                print '    if (!(Flags & D3DLOCK_READONLY)) {'
             print '        _getMapInfo(_this, %s, _pbData, _MappedSize);' % ', '.join(method.argNames()[:-1])
             print '    }'
             print '    if (_MappedSize) {'
@@ -229,6 +270,19 @@ class D3DRetracer(Retracer):
             print '        _maps[_mappingKey] = 0;'
             print '    }'
 
+        if interface.name == 'IDirectXVideoDecoder':
+            if method.name == 'GetBuffer':
+                print '    if (*ppBuffer && *pBufferSize) {'
+                print '        _maps[MappingKey(_this, BufferType)] = *ppBuffer;'
+                print '    }'
+            if method.name == 'ReleaseBuffer':
+                print '    MappingKey _mappingKey(_this, BufferType);'
+                print '    void *_pBuffer = _maps[_mappingKey];'
+                print '    if (_pBuffer) {'
+                print '        retrace::delRegionByPointer(_pBuffer);'
+                print '        _maps[_mappingKey] = 0;'
+                print '    }'
+
 
 def main():
     print r'#include <string.h>'
@@ -246,12 +300,16 @@ def main():
     if support:
         if moduleName == 'd3d9':
             from specs.d3d9 import d3d9, d3dperf
+            from specs.dxva2 import dxva2
             print r'#include "d3d9imports.hpp"'
             print r'#include "d3d9size.hpp"'
+            print r'#include "dxva2imports.hpp"'
             d3d9.mergeModule(d3dperf)
             api.addModule(d3d9)
+            api.addModule(dxva2)
             print
             print '''static d3dretrace::D3DDumper<IDirect3DDevice9> d3d9Dumper;'''
+            print '''static d3dretrace::D3DDumper<IDirect3DSwapChain9> d3d9scDumper;'''
             print
         elif moduleName == 'd3d8':
             from specs.d3d8 import d3d8

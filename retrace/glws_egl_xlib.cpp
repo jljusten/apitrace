@@ -47,12 +47,12 @@ static bool has_EGL_KHR_create_context = false;
 
 
 static EGLenum
-translateAPI(glprofile::Profile profile)
+translateAPI(glfeatures::Profile profile)
 {
     switch (profile.api) {
-    case glprofile::API_GL:
+    case glfeatures::API_GL:
         return EGL_OPENGL_API;
-    case glprofile::API_GLES:
+    case glfeatures::API_GLES:
         return EGL_OPENGL_ES_API;
     default:
         assert(0);
@@ -106,8 +106,9 @@ public:
     EGLSurface surface;
     EGLenum api;
 
-    EglDrawable(const Visual *vis, int w, int h, bool pbuffer) :
-        Drawable(vis, w, h, pbuffer),
+    EglDrawable(const Visual *vis, int w, int h,
+                const glws::pbuffer_info *pbInfo) :
+        Drawable(vis, w, h, pbInfo),
         api(EGL_OPENGL_ES_API)
     {
         XVisualInfo *visinfo = static_cast<const EglVisual *>(visual)->visinfo;
@@ -154,7 +155,7 @@ public:
     }
 
     void
-    resize(int w, int h) {
+    resize(int w, int h) override {
         if (w == width && h == height) {
             return;
         }
@@ -194,7 +195,7 @@ public:
         assert(eglHeight == height);
     }
 
-    void show(void) {
+    void show(void) override {
         if (visible) {
             return;
         }
@@ -208,7 +209,7 @@ public:
         Drawable::show();
     }
 
-    void swapBuffers(void) {
+    void swapBuffers(void) override {
         bindAPI(api);
         eglSwapBuffers(eglDisplay, surface);
         processKeys(window);
@@ -293,12 +294,12 @@ cleanup(void) {
 Visual *
 createVisual(bool doubleBuffer, unsigned samples, Profile profile) {
     EGLint api_bits;
-    if (profile.api == glprofile::API_GL) {
+    if (profile.api == glfeatures::API_GL) {
         api_bits = EGL_OPENGL_BIT;
         if (profile.core && !has_EGL_KHR_create_context) {
             return NULL;
         }
-    } else if (profile.api == glprofile::API_GLES) {
+    } else if (profile.api == glfeatures::API_GLES) {
         switch (profile.major) {
         case 1:
             api_bits = EGL_OPENGL_ES_BIT;
@@ -391,9 +392,10 @@ createVisual(bool doubleBuffer, unsigned samples, Profile profile) {
 }
 
 Drawable *
-createDrawable(const Visual *visual, int width, int height, bool pbuffer)
+createDrawable(const Visual *visual, int width, int height,
+               const glws::pbuffer_info *pbInfo)
 {
-    return new EglDrawable(visual, width, height, pbuffer);
+    return new EglDrawable(visual, width, height, pbInfo);
 }
 
 
@@ -411,7 +413,7 @@ createContext(const Visual *_visual, Context *shareContext, bool debug)
     }
 
     int contextFlags = 0;
-    if (profile.api == glprofile::API_GL) {
+    if (profile.api == glfeatures::API_GL) {
         load("libGL.so.1");
 
         if (has_EGL_KHR_create_context) {
@@ -426,7 +428,7 @@ createContext(const Visual *_visual, Context *shareContext, bool debug)
             std::cerr << "error: EGL_KHR_create_context not supported\n";
             return NULL;
         }
-    } else if (profile.api == glprofile::API_GLES) {
+    } else if (profile.api == glfeatures::API_GLES) {
         if (profile.major >= 2) {
             load("libGLESv2.so.2");
         } else {
@@ -469,7 +471,7 @@ createContext(const Visual *_visual, Context *shareContext, bool debug)
 }
 
 bool
-makeCurrent(Drawable *drawable, Context *context)
+makeCurrentInternal(Drawable *drawable, Context *context)
 {
     if (!drawable || !context) {
         return eglMakeCurrent(eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -492,6 +494,27 @@ makeCurrent(Drawable *drawable, Context *context)
     }
 }
 
+
+bool
+bindTexImage(Drawable *pBuffer, int iBuffer) {
+    std::cerr << "error: EGL/XLIB::wglBindTexImageARB not implemented.\n";
+    assert(pBuffer->pbuffer);
+    return true;
+}
+
+bool
+releaseTexImage(Drawable *pBuffer, int iBuffer) {
+    std::cerr << "error: EGL/XLIB::wglReleaseTexImageARB not implemented.\n";
+    assert(pBuffer->pbuffer);
+    return true;
+}
+
+bool
+setPbufferAttrib(Drawable *pBuffer, const int *attribList) {
+    // nothing to do here.
+    assert(pBuffer->pbuffer);
+    return true;
+}
 
 
 } /* namespace glws */

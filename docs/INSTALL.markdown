@@ -1,6 +1,12 @@
+[![Build Status](https://travis-ci.org/apitrace/apitrace.svg?branch=master)](https://travis-ci.org/apitrace/apitrace)
+[![Build status](https://ci.appveyor.com/api/projects/status/5da6kauyfvclv6y0/branch/master?svg=true)](https://ci.appveyor.com/project/jrfonseca/apitrace/branch/master)
+
+
 # Requirements #
 
 Requirements common for all platforms:
+
+* C++ compiler
 
 * Python version 2.7
 
@@ -8,7 +14,7 @@ Requirements common for all platforms:
 
 * CMake version 2.8.11 or higher (tested with version 2.8.12.2)
 
-Optional requirements:
+Optional dependencies:
 
 * zlib 1.2.6 or higher
 
@@ -24,6 +30,9 @@ Qt will be required if `-DENABLE_GUI=TRUE` is passed to CMake, and never used
 if `-DENABLE_GUI=FALSE` is passed instead.  The implicit default is
 `-DENABLE_GUI=AUTO`, which will build the GUI if Qt is available.
 
+If you have Qt in a non-standard directory, you'll need to set
+[`-DCMAKE_PREFIX_PATH`](http://doc.qt.io/qt-5/cmake-manual.html).
+
 
 The code also depends on snappy libraries, but the bundled sources are always
 used regardless of system availability, to make the wrapper shared-objects/DLL
@@ -32,7 +41,9 @@ self contained, and to prevent symbol collisions when tracing.
 
 # Linux #
 
-Additional optional dependencies:
+Optional dependencies:
+
+* Xlib headers
 
 * libprocps (procps development libraries)
 
@@ -73,14 +84,17 @@ Build as:
 
 Additional requirements:
 
+* [Android CMake](https://github.com/taka-no-me/android-cmake)
 * [Android NDK](http://developer.android.com/sdk/ndk/index.html)
 * [Android SDK](http://developer.android.com/sdk/index.html#Other). **Make sure you have Android 4.4.2 (API 19) platform SDK installed and Android build tools "21.1.2". API 19 is needed only to build the APK, but it will still run on lower API versions (with works starting with API 12).**
 
 Build as:
 
+    wget -N https://raw.githubusercontent.com/taka-no-me/android-cmake/master/android.toolchain.cmake
+    
     cmake \
         -H. -Bbuild \
-        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain/android.toolchain.cmake \
+        -DCMAKE_TOOLCHAIN_FILE=$PWD/android.toolchain.cmake \
         -DANDROID_NDK=/path/to/your/ndk \
         -DANDROID_API_LEVEL=9 \
         -DANDROID_STL=gnustl_shared \
@@ -97,7 +111,7 @@ CMake as:
 
     cmake \
         -H. -Bbuild \
-        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain/android.toolchain.cmake \
+        -DCMAKE_TOOLCHAIN_FILE=$PWD/android.toolchain.cmake \
         -DANDROID_API_LEVEL=9 \
         -DANDROID_TOOLCHAIN_NAME=aarch64-linux-android-4.9 \
         -DANDROID_ABI=arm64-v8a
@@ -120,19 +134,25 @@ build process. It expects a linaro-type of Android NDK to be present in
 
 Additional requirements:
 
-* Microsoft Visual Studio 2013 or newer (tested with 2013)
+* CMake 3.4 or later
 
-* [Windows 8.1 SDK](http://msdn.microsoft.com/en-us/windows/desktop/bg162891.aspx)
-  for D3D11.2 headers.
+* Microsoft Visual Studio 2013 or newer (instructions presume 2015)
+
+* [Windows 10 SDK](https://dev.windows.com/en-us/downloads/windows-10-sdk)
+  for D3D11.3 headers.
 
 * Microsoft DirectX SDK is now part of Microsoft Visual Studio (from version
   2012), but D3D8 headers are not included, so if you want D3D8 support you'll
   need to donwload and install the
-  [August 2007 release of DirectX SDK](http://www.microsoft.com/downloads/details.aspx?familyid=529F03BE-1339-48C4-BD5A-8506E5ACF571)
+  [August 2007 release of DirectX SDK](https://www.microsoft.com/en-gb/download/details.aspx?id=13287)
 
-To build with Visual Studio first invoke CMake GUI as:
+### CMake GUI ###
 
-    cmake-gui -H. -Bbuild -DCMAKE_PREFIX_PATH=C:\Qt\QtX.Y.Z\X.Y\msvc2013
+To build with Visual Studio first open a Command Prompt window (*not* Visual
+Studio Command Prompt window), change into the Apitrace source, and invoke
+CMake GUI as:
+
+    cmake-gui -H. -Bbuild -DCMAKE_SYSTEM_VERSION=10.0 -DCMAKE_PREFIX_PATH=C:\Qt\QtX.Y.Z\X.Y\msvc2015
 
 and press the _Configure_ button.
 
@@ -144,30 +164,52 @@ If the source/build/compiler/tools are spread across multiple drives, you might
 need to [use absolute paths](https://github.com/apitrace/apitrace/issues/352).
 
 After you've successfully configured, you can start the build by opening the
-generated `build\apitrace.sln` solution file, or invoking CMake as:
+generated `build\apitrace.sln` solution file
 
-    cmake --build build --config MinSizeRel
+### CMake CLI ###
+
+Another option is to use the commandline to configure the project. First of all find out which
+generators are available on your system:
+
+    cmake --help
+
+At the end of the output, choose a generator and start configuring the project:
+
+    cmake -H. -Bbuild -G "Visual Studio 14 2015" -DCMAKE_SYSTEM_VERSION=10.0 -DCMAKE_PREFIX_PATH=C:\Qt\QtX.Y.Z\X.Y\msvc2015
+
+After you've successfully configured, you can start the build by invoking CMake as:
+
+    cmake --build build --config RelWithDebInfo
+
+### Deployment ###
+
+To run qapitrace, either ensure that `C:\Qt\QtX.Y.Z\X.Y\msvc2015\bin` is in the system path, or use
+[Qt's Windows deployment tool](http://doc.qt.io/qt-5/windows-deployment.html#the-windows-deployment-tool)
+to copy all necessary DLLs, like:
+
+    set Path=C:\Qt\QtX.Y.Z\X.Y\msvc2015\bin;%Path%
+    windeployqt build\qapitrace.exe
+
+### 64-bits ###
 
 The steps to build 64-bits version are similar, but choosing _Visual Studio xx
-Win64_ instead of _Visual Studio xx_.
+Win64_ instead of _Visual Studio xx_, and using `C:\Qt\QtX.Y.Z\X.Y\msvc2015_64`
+for Qt path.
+
+### Windows XP ###
 
 By default, binaries generated by recent builds of Visual Studio will not work
-on Windows XP.  If you want to obtain binaries that on Windows XP then pass the
-`-T v110_xp` or `-T v120_xp` options to cmake when building with Visual Studio
-2012 or 2013 respectively.
-
-To run qapitrace, either you ensure that `C:\Qt\QtX.Y.Z\X.Y\msvc2013\bin` is in the system path, or you can use [Qt's Windows deployment tool](http://doc.qt.io/qt-5/windows-deployment.html#the-windows-deployment-tool) to copy all necessary DLLs, like:
-
-    set Path=C:\Qt\QtX.Y.Z\X.Y\msvc2013\bin;%Path%
-    windeployqt build\qapitrace.exe
+on Windows XP.  If you want to obtain binaries that work on Windows XP then
+pass the `-T v140_xp -DCMAKE_SYSTEM_VERSION=5.1` options to CMake when building
+with Visual Studio 2015.
 
 ## MinGW ##
 
 Additional requirements:
 
-* [MinGW-w64](http://mingw-w64.sourceforge.net/) (tested with mingw-w64's gcc version 4.6.3)
+* [MinGW-w64](http://mingw-w64.sourceforge.net/) (tested with mingw-w64's gcc version 4.9)
 
-* [https://github.com/apitrace/dxsdk](DirectX headers)
+* [DirectX headers](https://github.com/apitrace/dxsdk)
 
 It's also possible to cross-compile Windows binaries from Linux with
 [MinGW cross compilers](http://www.cmake.org/Wiki/CmakeMingw).

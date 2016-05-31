@@ -96,16 +96,15 @@ static void retrace_glXCreateContextAttribsARB(trace::Call &call) {
     Context *share_context = getContext(call.arg(2).toUIntPtr());
 
     const trace::Value * attrib_list = &call.arg(4);
-    glprofile::Profile profile = parseContextAttribList(attrib_list);
+    glfeatures::Profile profile = parseContextAttribList(attrib_list);
 
     Context *context = glretrace::createContext(share_context, profile);
     context_map[orig_context] = context;
 }
 
 static void retrace_glXMakeCurrent(trace::Call &call) {
-    bool ret = call.ret->toBool();
-    if (!ret) {
-        // If false is returned then any previously current rendering context
+    if (call.ret && !call.ret->toBool()) {
+        // If false was returned then any previously current rendering context
         // and drawable remain unchanged.
         return;
     }
@@ -124,7 +123,7 @@ static void retrace_glXDestroyContext(trace::Call &call) {
         return;
     }
 
-    delete it->second;
+    it->second->release();
 
     context_map.erase(it);
 }
@@ -173,8 +172,9 @@ static void retrace_glXCreatePbuffer(trace::Call &call) {
     const trace::Value *attrib_list = &call.arg(2);
     int width = glretrace::parseAttrib(attrib_list, GLX_PBUFFER_WIDTH, 0);
     int height = glretrace::parseAttrib(attrib_list, GLX_PBUFFER_HEIGHT, 0);
+    glws::pbuffer_info pbInfo = {0, 0, false};
 
-    glws::Drawable *drawable = glretrace::createPbuffer(width, height);
+    glws::Drawable *drawable = glretrace::createPbuffer(width, height, &pbInfo);
     
     drawable_map[orig_drawable] = drawable;
 }
@@ -190,9 +190,8 @@ static void retrace_glXDestroyPbuffer(trace::Call &call) {
 }
 
 static void retrace_glXMakeContextCurrent(trace::Call &call) {
-    bool ret = call.ret->toBool();
-    if (!ret) {
-        // If false is returned then any previously current rendering context
+    if (call.ret && !call.ret->toBool()) {
+        // If false was returned then any previously current rendering context
         // and drawable remain unchanged.
         return;
     }

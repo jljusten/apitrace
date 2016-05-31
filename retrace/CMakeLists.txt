@@ -3,10 +3,12 @@
 
 include_directories (
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/lib/highlight
     ${CMAKE_SOURCE_DIR}/helpers
     ${CMAKE_BINARY_DIR}/dispatch
     ${CMAKE_SOURCE_DIR}/dispatch
-    ${CMAKE_SOURCE_DIR}/image
+    ${CMAKE_SOURCE_DIR}/lib/image
+    ${CMAKE_SOURCE_DIR}/lib/ubjson
     ${CMAKE_SOURCE_DIR}/thirdparty/dxerr
 )
 
@@ -33,6 +35,10 @@ add_custom_command (
         ${CMAKE_SOURCE_DIR}/specs/stdapi.py
 )
 
+if (WIN32)
+    set (ws_os ws_win32.cpp)
+endif ()
+
 add_library (retrace_common STATIC
     retrace.cpp
     retrace_main.cpp
@@ -42,6 +48,8 @@ add_library (retrace_common STATIC
     state_writer.cpp
     state_writer_json.cpp
     state_writer_ubjson.cpp
+    ws.cpp
+    ${ws_os}
 )
 target_link_libraries (retrace_common
     image
@@ -59,10 +67,12 @@ endif ()
 
 
 add_library (glretrace_common STATIC
+    glretrace.hpp
     glretrace_gl.cpp
     glretrace_cgl.cpp
     glretrace_glx.cpp
     glretrace_wgl.cpp
+    glretrace_wgl_font.cpp
     glretrace_egl.cpp
     glretrace_main.cpp
     glretrace_ws.cpp
@@ -72,6 +82,11 @@ add_library (glretrace_common STATIC
     glstate_params.cpp
     glstate_shaders.cpp
     glws.cpp
+    metric_helper.cpp
+    metric_writer.cpp
+    metric_backend_amd_perfmon.cpp
+    metric_backend_intel_perfquery.cpp
+    metric_backend_opengl.cpp
 )
 add_dependencies (glretrace_common glproc)
 target_link_libraries (glretrace_common
@@ -153,20 +168,20 @@ if (ENABLE_EGL AND X11_FOUND AND NOT WIN32 AND NOT APPLE AND NOT ENABLE_WAFFLE)
 endif ()
 
 if (ENABLE_EGL)
-    if ((ANDROID OR ENABLE_WAFFLE) AND Waffle_FOUND)
+    if (ENABLE_WAFFLE)
         add_executable (eglretrace
             glws_waffle.cpp
         )
 
         add_dependencies (eglretrace glproc)
-        include_directories (${Waffle_INCLUDE_DIR})
+        include_directories (${Waffle_INCLUDE_DIRS})
 
         target_link_libraries (eglretrace
             retrace_common
             glretrace_common
             glhelpers
             glproc_egl
-            ${Waffle_LIBRARY}
+            ${Waffle_LIBRARIES}
             ${X11_X11_LIB}
             ${CMAKE_THREAD_LIBS_INIT}
             ${CMAKE_DL_LIBS}
@@ -287,14 +302,15 @@ if (WIN32)
             ${CMAKE_SOURCE_DIR}/specs/d3d9.py
             ${CMAKE_SOURCE_DIR}/specs/d3d9types.py
             ${CMAKE_SOURCE_DIR}/specs/d3d9caps.py
+            ${CMAKE_SOURCE_DIR}/specs/dxva2.py
             ${CMAKE_SOURCE_DIR}/specs/winapi.py
             ${CMAKE_SOURCE_DIR}/specs/stdapi.py
     )
 
-    if (DirectX_D3D11_2_INCLUDE_FOUND)
+    if (DirectX_D3D11_3_INCLUDE_FOUND)
         add_definitions (-DHAVE_DXGI)
         include_directories (BEFORE SYSTEM
-            ${DirectX_D3D11_2_INCLUDE_DIR}
+            ${DirectX_D3D11_3_INCLUDE_DIR}
             ${CMAKE_SOURCE_DIR}/thirdparty/directxtex/DirectXTex
         )
         set (D3DSTATE_SOURCES ${D3DSTATE_SOURCES}
@@ -305,6 +321,7 @@ if (WIN32)
             d3d11state.cpp
             d3d11state_images.cpp
             d3dretrace_dxgi.cpp
+            d3dretrace_dxgi_misc.cpp
         )
         add_custom_command (
             OUTPUT dxgistate_so.cpp
@@ -312,10 +329,10 @@ if (WIN32)
             DEPENDS
                 ${CMAKE_CURRENT_SOURCE_DIR}/dxgistate_so.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d11.py
+                ${CMAKE_SOURCE_DIR}/specs/dcomp.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d11sdklayers.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d10.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d10sdklayers.py
-                ${CMAKE_SOURCE_DIR}/specs/d3dcommon.py
                 ${CMAKE_SOURCE_DIR}/specs/dxgi.py
                 ${CMAKE_SOURCE_DIR}/specs/winapi.py
                 ${CMAKE_SOURCE_DIR}/specs/stdapi.py
@@ -329,10 +346,10 @@ if (WIN32)
                 retrace.py
                 ${CMAKE_SOURCE_DIR}/dispatch/dispatch.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d11.py
+                ${CMAKE_SOURCE_DIR}/specs/dcomp.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d11sdklayers.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d10.py
                 ${CMAKE_SOURCE_DIR}/specs/d3d10sdklayers.py
-                ${CMAKE_SOURCE_DIR}/specs/d3dcommon.py
                 ${CMAKE_SOURCE_DIR}/specs/dxgi.py
                 ${CMAKE_SOURCE_DIR}/specs/winapi.py
                 ${CMAKE_SOURCE_DIR}/specs/stdapi.py
@@ -355,7 +372,7 @@ if (WIN32)
         retrace_common
         d3dhelpers
     )
-    if (DirectX_D3D11_2_INCLUDE_FOUND)
+    if (DirectX_D3D11_3_INCLUDE_FOUND)
         target_link_libraries (d3dretrace directxtex)
     endif ()
 

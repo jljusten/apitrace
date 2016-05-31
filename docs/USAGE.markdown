@@ -141,7 +141,7 @@ See the `ld.so` man page for more information about `LD_PRELOAD` and
 
 To trace standalone native OpenGL ES applications, use
 `LD_PRELOAD=/path/to/egltrace.so /path/to/application` as described in the
-previous section.  To trace Java applications, refer to Dalvik.markdown.
+previous section.  To trace Java applications, refer to Android.markdown.
 
 ### Mac OS X ###
 
@@ -181,7 +181,7 @@ simplest way to determine what API an application uses is to:
 * list the DLLs by pressing `Ctrl + D`
 
 * sort DLLs alphabetically, and look for the DLLs such as `opengl32.dll`,
-  `d3d9.dll`, `d3d10.dll`, etc.
+  `d3d9.dll`, etc.
 
 Copy the appropriate `opengl32.dll`, `d3d8.dll`, or `d3d9.dll` from the
 wrappers directory to the directory with the application you want to trace.
@@ -315,6 +315,21 @@ parameters.
 String values are contained inside `""` pairs and may span multiple lines.
 Integer values are given without quotes.
 
+## Identify OpenGL object leaks ##
+
+You can identify OpenGL object leaks by running:
+
+    apitrace leaks application.trace
+
+This will print leaked object list and its generated call numbers.
+
+apitrace provides very basic leak tracking: it tracks all textures/
+framebuffers/renderbuffers/buffers name generate and delete call.  If a object is not
+deleted until context destruction, it's treated as 'leaked'.  This logic doesn't
+consider multi-context in multi-thread situation, so may report incorrect
+results in such scenarios.
+
+To use this fomr the GUI, go to  menu -> Trace -> LeakTrace
 
 ## Dump OpenGL state at a particular call ##
 
@@ -363,7 +378,7 @@ You can make a video of the output with gstreamer by doing
 
 You can truncate a trace by doing:
 
-    apitrace trim --exact --calls 0-12345 -o trimed.trace application.trace
+    apitrace trim --calls 0-12345 -o trimed.trace application.trace
 
 If you need precise control over which calls to trim you can specify the
 individual call numbers in a plain text file, as described in the 'Call sets'
@@ -372,8 +387,8 @@ section above.
 There is also experimental support for automatically trimming the calls
 necessary for a given frame or call:
 
-    apitrace trim --auto --calls=12345 -o trimed.trace application.trace
-    apitrace trim --auto --frames=12345 -o trimed.trace application.trace
+    apitrace trim-auto --calls=12345 -o trimed.trace application.trace
+    apitrace trim-auto --frames=12345 -o trimed.trace application.trace
 
 
 ## Profiling a trace ##

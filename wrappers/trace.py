@@ -67,19 +67,29 @@ class ComplexValueSerializer(stdapi.OnceVisitor):
         self.visit(const.type)
 
     def visitStruct(self, struct):
-        print 'static const char * _struct%s_members[%u] = {' % (struct.tag, len(struct.members))
-        for type, name,  in struct.members:
-            if name is None:
-                print '    "",'
-            else:
-                print '    "%s",' % (name,)
-        print '};'
+        # Write array with structure's member names
+        numMembers = len(struct.members)
+        if numMembers:
+            # Ensure member array has nonzero length to avoid MSVC error C2466
+            memberNames = '_struct%s_members' % (struct.tag,)
+            print 'static const char * %s[%u] = {' % (memberNames, numMembers)
+            for type, name,  in struct.members:
+                if name is None:
+                    print '    "",'
+                else:
+                    print '    "%s",' % (name,)
+            print '};'
+        else:
+            sys.stderr.write('warning: %s has no members\n' % struct.name)
+            memberNames = 'nullptr'
+
+        # Write structure's signature
         print 'static const trace::StructSig _struct%s_sig = {' % (struct.tag,)
         if struct.name is None:
             structName = '""'
         else:
             structName = '"%s"' % struct.name
-        print '    %u, %s, %u, _struct%s_members' % (struct.id, structName, len(struct.members), struct.tag)
+        print '    %u, %s, %u, %s' % (struct.id, structName, numMembers, memberNames)
         print '};'
         print
 
@@ -350,7 +360,7 @@ class WrapDecider(stdapi.Traverser):
     def visitLinearPointer(self, void):
         pass
 
-    def visitInterface(self, interface):
+    def visitObjPointer(self, interface):
         self.needsWrapping = True
 
 
@@ -385,7 +395,8 @@ class ValueWrapper(stdapi.Traverser, stdapi.ExpanderMixin):
         elif isinstance(elem_type, stdapi.Alias) and isinstance(elem_type.type, stdapi.Interface):
             self.visitInterfacePointer(elem_type.type, instance)
         else:
-            self.visitPointer(pointer, instance)
+            # All interfaces should at least implement IUnknown
+            print "    WrapIUnknown::_wrap(__FUNCTION__, (IUnknown **) &%s);" % (instance,)
     
     def visitInterface(self, interface, instance):
         raise NotImplementedError
@@ -494,7 +505,11 @@ class Tracer:
         for function in api.getAllFunctions():
             self.traceFunctionDecl(function)
         for function in api.getAllFunctions():
-            self.traceFunctionImpl(function)
+            try:
+                self.traceFunctionImpl(function)
+            except:
+                sys.stderr.write("error: %s: exception\n" % function.name)
+                raise
         print
 
         self.footer(api)
@@ -523,7 +538,7 @@ class Tracer:
                 print 'static const char * _%s_args[%u] = {%s};' % (function.name, len(function.args), ', '.join(['"%s"' % arg.name for arg in function.args]))
             else:
                 print 'static const char ** _%s_args = NULL;' % (function.name,)
-            print 'static const trace::FunctionSig _%s_sig = {%u, "%s", %u, _%s_args};' % (function.name, self.getFunctionSigId(), function.name, len(function.args), function.name)
+            print 'static const trace::FunctionSig _%s_sig = {%u, "%s", %u, _%s_args};' % (function.name, self.getFunctionSigId(), function.sigName(), len(function.args), function.name)
             print
 
     def getFunctionSigId(self):
@@ -658,6 +673,9 @@ class Tracer:
         if not interfaces:
             return
 
+        print r'#include "guids.hpp"'
+        print
+
         map(self.declareWrapperInterface, interfaces)
 
         # Helper functions to wrap/unwrap interface pointers
@@ -699,7 +717,7 @@ class Tracer:
 
         methods = list(interface.iterMethods())
         for method in methods:
-            print "    " + method.prototype() + ";"
+            print "    " + method.prototype() + " override;"
         print
 
         for type, name, value in self.enumWrapperInterfaceVariables(interface):
@@ -792,16 +810,12 @@ class Tracer:
         print r'            return;'
         print r'        }'
         print r'    }'
-        else_ = ''
         for childIface in getInterfaceHierarchy(ifaces, iface):
-            print r'    %sif (hasChildInterface(IID_%s, pObj)) {' % (else_, childIface.name)
-            print r'        pObj = Wrap%s::_create(entryName, static_cast<%s *>(pObj));' % (childIface.name, childIface.name)
+            print r'    if (hasChildInterface(IID_%s, pObj)) {' % (childIface.name,)
+            print r'        *ppObj = Wrap%s::_create(entryName, static_cast<%s *>(pObj));' % (childIface.name, childIface.name)
+            print r'        return;'
             print r'    }'
-            else_ = 'else '
-        print r'    %s{' % else_
-        print r'        pObj = Wrap%s::_create(entryName, pObj);' % iface.name
-        print r'    }'
-        print r'    *ppObj = pObj;'
+        print r'    *ppObj = Wrap%s::_create(entryName, pObj);' % iface.name
         print r'}'
         print
 
@@ -816,6 +830,7 @@ class Tracer:
         print r'        *ppObj = pWrapper->m_pInstance;'
         print r'    } else {'
         print r'        os::log("apitrace: warning: %%s: unexpected %%s pointer %%p\n", entryName, "%s", *ppObj);' % iface.name
+        print r'        trace::localWriter.flush();'
         print r'    }'
         print r'}'
         print
@@ -849,8 +864,16 @@ class Tracer:
     def implementWrapperInterfaceMethodBody(self, interface, base, method):
         assert not method.internal
 
-        print '    static const char * _args[%u] = {%s};' % (len(method.args) + 1, ', '.join(['"this"'] + ['"%s"' % arg.name for arg in method.args]))
-        print '    static const trace::FunctionSig _sig = {%u, "%s", %u, _args};' % (self.getFunctionSigId(), interface.name + '::' + method.name, len(method.args) + 1)
+        sigName = interface.name + '::' + method.sigName()
+        if method.overloaded:
+            # Once the method signature name goes into a trace, we'll need to
+            # support it indefinetely, so log them so one can make sure nothing
+            # weird gets baked in
+            sys.stderr.write('note: overloaded method %s\n' % (sigName,))
+
+        numArgs = len(method.args) + 1
+        print '    static const char * _args[%u] = {%s};' % (numArgs, ', '.join(['"this"'] + ['"%s"' % arg.name for arg in method.args]))
+        print '    static const trace::FunctionSig _sig = {%u, "%s", %u, _args};' % (self.getFunctionSigId(), sigName, numArgs)
 
         print '    unsigned _call = trace::localWriter.beginEnter(&_sig);'
         print '    trace::localWriter.beginArg(0);'
@@ -890,13 +913,13 @@ class Tracer:
 
         print r'static void'
         print r'warnIID(const char *entryName, REFIID riid, void *pvObj, const char *reason) {'
-        print r'    os::log("apitrace: warning: %s: %s IID %08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x\n",'
+        print r'    os::log("apitrace: warning: %s: %s IID %s\n",'
         print r'            entryName, reason,'
-        print r'            riid.Data1, riid.Data2, riid.Data3,'
-        print r'            riid.Data4[0], riid.Data4[1], riid.Data4[2], riid.Data4[3], riid.Data4[4], riid.Data4[5], riid.Data4[6], riid.Data4[7]);'
+        print r'            getGuidName(riid));'
         print r'    void * pVtbl = *(void **)pvObj;'
         print r'    HMODULE hModule = 0;'
-        print r'    BOOL bRet = GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,'
+        print r'    BOOL bRet = GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |'
+        print r'                                  GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,'
         print r'                                  (LPCTSTR)pVtbl,'
         print r'                                  &hModule);'
         print r'    assert(bRet);'
@@ -916,15 +939,12 @@ class Tracer:
         print r'    if (!ppvObj || !*ppvObj) {'
         print r'        return;'
         print r'    }'
-        else_ = ''
         for iface in ifaces:
-            print r'    %sif (riid == IID_%s) {' % (else_, iface.name)
+            print r'    if (riid == IID_%s) {' % (iface.name,)
             print r'        Wrap%s::_wrap(entryName, (%s **) ppvObj);' % (iface.name, iface.name)
+            print r'        return;'
             print r'    }'
-            else_ = 'else '
-        print r'    %s{' % else_
-        print r'        warnIID(entryName, riid, *ppvObj, "unknown");'
-        print r'    }'
+        print r'    warnIID(entryName, riid, *ppvObj, "unsupported");'
         print r'}'
         print
 
@@ -962,6 +982,7 @@ class Tracer:
         print '    trace::fakeMemcpy(%s, %s);' % (ptr, size)
     
     def fake_call(self, function, args):
+        print '        {'
         print '            unsigned _fake_call = trace::localWriter.beginEnter(&_%s_sig, true);' % (function.name,)
         for arg, instance in zip(function.args, args):
             assert not arg.output
@@ -971,4 +992,5 @@ class Tracer:
         print '            trace::localWriter.endEnter();'
         print '            trace::localWriter.beginLeave(_fake_call);'
         print '            trace::localWriter.endLeave();'
+        print '        }'
        

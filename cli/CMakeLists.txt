@@ -14,11 +14,17 @@ else ()
     add_definitions (-DAPITRACE_PYTHON_EXECUTABLE="${PYTHON_EXECUTABLE}")
 endif ()
 
+include_directories (
+    ${CMAKE_SOURCE_DIR}/lib/highlight
+    ${CMAKE_SOURCE_DIR}/thirdparty
+)
+
 add_executable (apitrace
     cli_main.cpp
     cli_diff.cpp
     cli_diff_state.cpp
     cli_diff_images.cpp
+    cli_leaks.cpp
     cli_dump.cpp
     cli_dump_images.cpp
     cli_pager.cpp
@@ -28,12 +34,14 @@ add_executable (apitrace
     cli_sed.cpp
     cli_trace.cpp
     cli_trim.cpp
+    cli_trim_auto.cpp
+    cli_trim_auto_analyzer.cpp
     cli_resources.cpp
-    trace_analyzer.cpp
 )
 
 target_link_libraries (apitrace
     common
+    brotli_enc_bundled
     ${ZLIB_LIBRARIES}
     ${SNAPPY_LIBRARIES}
     ${GETOPT_LIBRARIES}

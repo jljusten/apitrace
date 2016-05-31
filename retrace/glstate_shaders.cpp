@@ -26,6 +26,7 @@
 
 #include <assert.h>
 #include <string.h>
+#include <stdio.h>
 
 #include <algorithm>
 #include <iostream>
@@ -79,7 +80,7 @@ getShaderSource(ShaderMap &shaderMap, GLuint shader)
 
 
 static inline void
-dumpProgram(StateWriter &writer, GLint program)
+dumpProgram(StateWriter &writer, Context &context, GLint program)
 {
     if (program <= 0) {
         return;
@@ -107,14 +108,68 @@ dumpProgram(StateWriter &writer, GLint program)
         writer.writeString(it->second);
         writer.endMember();
     }
+
+    // Dump NVIDIA GPU programs via GL_ARB_get_program_binary
+    if (context.ARB_get_program_binary) {
+        GLint binaryLength = 0;
+        glGetProgramiv(program, GL_PROGRAM_BINARY_LENGTH, &binaryLength);
+        if (binaryLength > 0) {
+            std::vector<char> binary(binaryLength);
+            GLenum format = GL_NONE;
+            glGetProgramBinary(program, binaryLength, NULL, &format, &binary[0]);
+            if (format == 0x8e21) {
+                if (0) {
+                    FILE *fp = fopen("program.bin", "wb");
+                    if (fp) {
+                        fwrite(&binary[0], 1, binaryLength, fp);
+                        fclose(fp);
+                    }
+                }
+
+                // Extract NVIDIA GPU programs
+                std::string str(binary.begin(), binary.end());
+                size_t end = 0;
+                while (true) {
+                    // Each program starts with a !!NV header token
+                    size_t start = str.find("!!NV", end);
+                    if (start == std::string::npos) {
+                        break;
+                    }
+
+                    // And is preceeded by a length DWORD
+                    assert(start >= end + 4);
+                    if (start < end + 4) {
+                        break;
+                    }
+                    uint32_t length;
+                    str.copy(reinterpret_cast<char *>(&length), 4, start - 4);
+                    assert(start + length <= binaryLength);
+                    if (start + length > binaryLength) {
+                        break;
+                    }
+
+                    std::string nvProg = str.substr(start, length);
+
+                    size_t eol = nvProg.find('\n');
+                    std::string nvHeader = nvProg.substr(2, eol - 2);
+
+                    writer.beginMember(nvHeader);
+                    writer.writeString(nvProg);
+                    writer.endMember();
+
+                    end = start + length;
+                }
+            }
+        }
+    }
 }
 
 
 /**
- * Built-in uniforms can't be queried through glGetUniform*.
+ * Built-in uniforms/attributes need special treatment.
  */
 static inline bool
-isBuiltinUniform(const GLchar *name)
+isBuiltinName(const GLchar *name)
 {
     return name[0] == 'g' && name[1] == 'l' && name[2] == '_';
 }
@@ -147,30 +202,21 @@ resolveUniformName(const GLchar *name,  GLint size)
 
 struct AttribDesc
 {
-    GLenum type;
-    GLenum size;
+    GLenum type = GL_NONE;
+    GLenum size = 0;
 
-    GLenum elemType;
-    GLint elemStride;
+    GLenum elemType = GL_NONE;
+    GLint elemStride = 0;
 
-    GLint numCols;
-    GLint numRows;
+    GLint numCols = 0;
+    GLint numRows = 0;
 
-    GLsizei rowStride;
-    GLsizei colStride;
+    GLsizei rowStride = 0;
+    GLsizei colStride = 0;
 
-    GLsizei arrayStride;
+    GLsizei arrayStride = 0;
 
-    AttribDesc() :
-        type(GL_NONE),
-        size(0),
-        elemType(GL_NONE),
-        elemStride(0),
-        numCols(0),
-        numRows(0),
-        rowStride(0),
-        colStride(0),
-        arrayStride(0)
+    AttribDesc(void)
     {}
 
     AttribDesc(GLenum _type,
@@ -179,7 +225,8 @@ struct AttribDesc
                GLint matrix_stride = 0,
                GLboolean is_row_major = GL_FALSE) :
         type(_type),
-        size(_size)
+        size(_size),
+        arrayStride(array_stride)
     {
         _gl_uniform_size(type, elemType, numCols, numRows);
 
@@ -193,15 +240,19 @@ struct AttribDesc
                 matrix_stride = numRows * elemStride;
             }
             colStride = matrix_stride;
+            if (!array_stride) {
+                arrayStride = numCols * colStride;
+            }
         } else {
             colStride = elemStride;
             if (!matrix_stride) {
                 matrix_stride = numCols * elemStride;
             }
             rowStride = matrix_stride;
+            if (!array_stride) {
+                arrayStride = numRows * rowStride;
+            }
         }
-
-        arrayStride = array_stride ? array_stride : size * matrix_stride;
     }
 
     inline
@@ -234,6 +285,8 @@ dumpAttrib(StateWriter &writer,
                 const GLdouble *dvalue;
                 const GLint *ivalue;
                 const GLuint *uivalue;
+                const GLint64 *i64value;
+                const GLuint64 *ui64value;
             } u;
 
             u.rawvalue = data + row*desc.rowStride + col*desc.colStride;
@@ -250,6 +303,12 @@ dumpAttrib(StateWriter &writer,
                 break;
             case GL_UNSIGNED_INT:
                 writer.writeInt(*u.uivalue);
+                break;
+            case GL_INT64_ARB:
+                writer.writeInt(*u.i64value);
+                break;
+            case GL_UNSIGNED_INT64_ARB:
+                writer.writeInt(*u.ui64value);
                 break;
             case GL_BOOL:
                 writer.writeBool(*u.uivalue);
@@ -347,7 +406,7 @@ dumpUniformBlock(StateWriter &writer,
             << "  offset " << offset << ", array stride " << array_stride << ", matrix stride " << matrix_stride << ", row_major " << is_row_major << "\n"
         ;
 
-        delete block_name;
+        delete [] block_name;
     }
 
     GLint ubo = 0;
@@ -380,6 +439,8 @@ dumpUniform(StateWriter &writer,
         GLdouble dvalues[4*4];
         GLint ivalues[4*4];
         GLuint uivalues[4*4];
+        GLint64 i64values[4*4];
+        GLuint64 ui64values[4*4];
         GLbyte data[4*4*4];
     } u;
 
@@ -418,6 +479,12 @@ dumpUniform(StateWriter &writer,
             break;
         case GL_UNSIGNED_INT:
             glGetUniformuiv(program, location, u.uivalues);
+            break;
+        case GL_INT64_ARB:
+            glGetUniformi64vARB(program, location, u.i64values);
+            break;
+        case GL_UNSIGNED_INT64_ARB:
+            glGetUniformui64vARB(program, location, u.ui64values);
             break;
         case GL_BOOL:
             glGetUniformiv(program, location, u.ivalues);
@@ -460,7 +527,7 @@ dumpProgramUniforms(StateWriter &writer, GLint program)
         GLenum type = GL_NONE;
         glGetActiveUniform(program, index, active_uniform_max_length, &length, &size, &type, name);
 
-        if (isBuiltinUniform(name)) {
+        if (isBuiltinName(name)) {
             continue;
         }
 
@@ -758,6 +825,279 @@ dumpProgramUniformsStage(StateWriter &writer, GLint program, const char *stage)
     writer.endMember();
 }
 
+struct VertexAttrib {
+    std::string name;
+    AttribDesc desc;
+    GLsizei offset = 0;
+    GLsizei stride = 0;
+    GLsizei size = 0;
+    const GLbyte *map;
+};
+
+static void
+dumpVertexAttributes(StateWriter &writer, Context &context, GLint program)
+{
+    if (program <= 0) {
+        return;
+    }
+
+    GLint activeAttribs = 0;
+    glGetProgramiv(program, GL_ACTIVE_ATTRIBUTES, &activeAttribs);
+    if (!activeAttribs) {
+        return;
+    }
+
+    GLint max_name_length = 0;
+    glGetProgramiv(program, GL_ACTIVE_ATTRIBUTE_MAX_LENGTH, &max_name_length);
+    std::vector<GLchar> name(max_name_length);
+
+    std::map<GLuint, BufferMapping> mappings;
+    std::vector<VertexAttrib> attribs;
+    unsigned count = ~0U;
+
+    for (GLint index = 0; index < activeAttribs; ++index) {
+        GLsizei length = 0;
+        GLint shaderSize = 0;
+        GLenum shaderType = GL_NONE;
+        glGetActiveAttrib(program, index, max_name_length, &length, &shaderSize, &shaderType, &name[0]);
+
+        if (isBuiltinName(&name[0])) {
+            // TODO: Handle built-ins too
+            std::cerr << "warning: dumping of built-in vertex attribute (" << &name[0] << ") not yet supported\n";
+            continue;
+        }
+
+        GLint location = glGetAttribLocation(program, &name[0]);
+        if (location < 0) {
+            continue;
+        }
+
+        GLint buffer = 0;
+        glGetVertexAttribiv(location, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buffer);
+        if (!buffer) {
+            continue;
+        }
+
+
+
+        GLint size = 0;
+        glGetVertexAttribiv(location, GL_VERTEX_ATTRIB_ARRAY_SIZE, &size);
+        GLint type = 0;
+        glGetVertexAttribiv(location, GL_VERTEX_ATTRIB_ARRAY_TYPE, &type);
+        GLint normalized = 0;
+        glGetVertexAttribiv(location, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &normalized);
+        GLint stride = 0;
+        glGetVertexAttribiv(location, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &stride);
+        GLvoid * pointer = 0;
+        glGetVertexAttribPointerv(location, GL_VERTEX_ATTRIB_ARRAY_POINTER, &pointer);
+
+        GLint offset = reinterpret_cast<intptr_t>(pointer);
+        assert(offset >= 0);
+
+        GLint divisor = 0;
+        glGetVertexAttribiv(location, GL_VERTEX_ATTRIB_ARRAY_DIVISOR, &divisor);
+        if (divisor) {
+            // TODO: not clear the best way of presenting instanced attibutes on the dump
+            std::cerr << "warning: dumping of instanced attributes (" << &name[0] << ") not yet supported\n";
+            return;
+        }
+
+        if (size == GL_BGRA) {
+            std::cerr << "warning: dumping of GL_BGRA attributes (" << &name[0] << ") not yet supported\n";
+            size = 4;
+        }
+
+        AttribDesc desc(type, size);
+        if (!desc) {
+            std::cerr << "warning: dumping of packed attribute (" << &name[0] << ") not yet supported\n";
+            // TODO: handle
+            continue;
+        }
+
+        attribs.emplace_back();
+        VertexAttrib &attrib = attribs.back();
+        attrib.name = &name[0];
+
+        // TODO handle normalized attributes
+        if (normalized) {
+            std::cerr << "warning: dumping of normalized attribute (" << &name[0] << ") not yet supported\n";
+        }
+
+        attrib.desc = desc;
+        GLsizei attribSize = attrib.desc.arrayStride;
+
+        if (stride == 0) {
+            // tightly packed
+            stride = attribSize;
+        }
+
+        attrib.offset = offset;
+        attrib.stride = stride;
+
+        BufferMapping &mapping = mappings[buffer];
+        attrib.map = (const GLbyte *)mapping.map(GL_ARRAY_BUFFER, buffer);
+
+        BufferBinding bb(GL_ARRAY_BUFFER, buffer);
+        GLint bufferSize = 0;
+        glGetBufferParameteriv(GL_ARRAY_BUFFER, GL_BUFFER_SIZE, &bufferSize);
+
+        if (bufferSize <= offset ||
+            bufferSize <= offset + attribSize) {
+            return;
+        } else {
+            unsigned attribCount = (bufferSize - offset - attribSize)/stride + 1;
+            count = std::min(count, attribCount);
+        }
+    }
+
+    if (count == 0 || count == ~0U || attribs.empty()) {
+        return;
+    }
+
+    writer.beginMember("vertices");
+    writer.beginArray();
+    for (unsigned vertex = 0; vertex < count; ++vertex) {
+        writer.beginObject();
+        for (auto attrib : attribs) {
+            const AttribDesc & desc = attrib.desc;
+            assert(desc);
+
+            const GLbyte *vertex_data = attrib.map + attrib.stride*vertex + attrib.offset;
+            dumpAttribArray(writer, attrib.name, desc, vertex_data);
+        }
+        writer.endObject();
+    }
+    writer.endArray();
+    writer.endMember();
+}
+
+
+static std::vector<GLint>
+getProgramResourcei(GLuint program, GLenum programInterface,
+                    GLuint index,
+                    std::vector<GLenum> const &properties,
+                    GLsizei expectedNumberOfResults) {
+    std::vector<GLint> result;
+    result.resize(expectedNumberOfResults, GL_INVALID_VALUE);
+    GLint actuallyWrittenProperties = -1;
+    glGetProgramResourceiv(program, programInterface, index, properties.size(),
+                           properties.data(), result.size(),
+                           &actuallyWrittenProperties, result.data());
+    result.resize(std::max(0, actuallyWrittenProperties));
+    return result;
+}
+
+/**
+ * Expects one result per property
+ */
+static std::vector<GLint>
+getProgramResourcei(GLuint program, GLenum programInterface,
+                    GLuint index,
+                    std::vector<GLenum> const &properties)
+{
+    return getProgramResourcei(program, programInterface, index, properties,
+                               properties.size());
+}
+
+static GLint
+getProgramResourcei(GLuint program, GLenum programInterface, GLuint index,
+                    GLenum property)
+{
+    auto result = getProgramResourcei(program, programInterface, index,
+                                      std::vector<GLenum>{property});
+    return result.at(0);
+}
+
+static std::string
+getProgramResourceName(GLuint program, GLenum programInterface,
+                       GLuint index)
+{
+    auto nameLength = getProgramResourcei(program, programInterface, index,
+                                          std::vector<GLenum>{GL_NAME_LENGTH})
+                          .at(0);
+    std::vector<char> buffer;
+    buffer.resize(nameLength);
+    glGetProgramResourceName(program, programInterface, index, nameLength, nullptr, buffer.data());
+    return {buffer.begin(), buffer.end()};
+}
+
+static void
+dumpShadersStorageBufferBlocks(StateWriter &writer, Context &context,
+                               GLuint program)
+{
+    if (!(context.ARB_shader_storage_buffer_object &&
+          context.ARB_program_interface_query)) {
+        return;
+    }
+
+    GLint numberOfActiveSSBBs = -1;
+    glGetProgramInterfaceiv(program, GL_SHADER_STORAGE_BLOCK,
+                            GL_ACTIVE_RESOURCES, &numberOfActiveSSBBs);
+    if (numberOfActiveSSBBs > 0) {
+        for (GLint ssbbResourceIndex = 0;
+             ssbbResourceIndex < numberOfActiveSSBBs; ++ssbbResourceIndex) {
+            GLint numberOfActiveVariables =
+                getProgramResourcei(program, GL_SHADER_STORAGE_BLOCK,
+                                    ssbbResourceIndex, GL_NUM_ACTIVE_VARIABLES);
+            auto ssbbName = getProgramResourceName(
+                program, GL_SHADER_STORAGE_BLOCK, ssbbResourceIndex);
+            auto activeVariables = getProgramResourcei(
+                program, GL_SHADER_STORAGE_BLOCK, ssbbResourceIndex,
+                {GL_ACTIVE_VARIABLES}, numberOfActiveVariables);
+            writer.beginMember(ssbbName);
+            writer.beginObject();
+            const GLint bufferBinding =
+                getProgramResourcei(program, GL_SHADER_STORAGE_BLOCK,
+                                    ssbbResourceIndex, GL_BUFFER_BINDING);
+            writer.writeIntMember("GL_BUFFER_BINDING", bufferBinding);
+            writer.writeIntMember(
+                "GL_BUFFER_DATA_SIZE",
+                getProgramResourcei(program, GL_SHADER_STORAGE_BLOCK,
+                                    ssbbResourceIndex, GL_BUFFER_DATA_SIZE));
+
+            for (auto property : {GL_REFERENCED_BY_VERTEX_SHADER,
+                                    GL_REFERENCED_BY_TESS_CONTROL_SHADER,
+                                    GL_REFERENCED_BY_TESS_EVALUATION_SHADER,
+                                    GL_REFERENCED_BY_GEOMETRY_SHADER,
+                                    GL_REFERENCED_BY_FRAGMENT_SHADER,
+                                    GL_REFERENCED_BY_COMPUTE_SHADER}) {
+                const auto value =
+                    getProgramResourcei(program, GL_SHADER_STORAGE_BLOCK,
+                                        ssbbResourceIndex, property);
+                if (value) {
+                    writer.writeBoolMember(enumToString(property), true);
+                }
+            }
+
+            writer.beginMember("activeVariables");
+            writer.beginObject();
+            for (GLint variableIndex : activeVariables) {
+                auto variableName = getProgramResourceName(
+                    program, GL_BUFFER_VARIABLE, variableIndex);
+                writer.beginMember(variableName);
+                writer.beginObject();
+
+                for (auto property :
+                     {GL_TYPE, GL_ARRAY_SIZE, GL_OFFSET, GL_BLOCK_INDEX,
+                      GL_ARRAY_STRIDE, GL_MATRIX_STRIDE, GL_IS_ROW_MAJOR,
+                      GL_TOP_LEVEL_ARRAY_SIZE, GL_TOP_LEVEL_ARRAY_STRIDE}) {
+                    int value = getProgramResourcei(program, GL_BUFFER_VARIABLE,
+                                                    variableIndex, property);
+                    writer.writeIntMember(enumToString(property), value);
+                }
+
+                writer.endObject();
+                writer.endMember(); // variableName
+            }
+            writer.endObject();
+            writer.endMember(); // activeVariables
+            writer.endObject();
+            writer.endMember(); // ssbbName
+        }
+    }
+}
+
+
 void
 dumpShadersUniforms(StateWriter &writer, Context &context)
 {
@@ -789,14 +1129,14 @@ dumpShadersUniforms(StateWriter &writer, Context &context)
     writer.beginMember("shaders");
     writer.beginObject();
     if (pipeline) {
-        dumpProgram(writer, vertex_program);
-        dumpProgram(writer, fragment_program);
-        dumpProgram(writer, geometry_program);
-        dumpProgram(writer, tess_control_program);
-        dumpProgram(writer, tess_evaluation_program);
-        dumpProgram(writer, compute_program);
+        dumpProgram(writer, context, vertex_program);
+        dumpProgram(writer, context, fragment_program);
+        dumpProgram(writer, context, geometry_program);
+        dumpProgram(writer, context, tess_control_program);
+        dumpProgram(writer, context, tess_evaluation_program);
+        dumpProgram(writer, context, compute_program);
     } else if (program) {
-        dumpProgram(writer, program);
+        dumpProgram(writer, context, program);
     } else {
         dumpArbProgram(writer, context, GL_FRAGMENT_PROGRAM_ARB);
         dumpArbProgram(writer, context, GL_VERTEX_PROGRAM_ARB);
@@ -824,11 +1164,33 @@ dumpShadersUniforms(StateWriter &writer, Context &context)
 
     writer.beginMember("buffers");
     writer.beginObject();
-    if (program) {
-        dumpTransformFeedback(writer, program);
+    if (!context.ES) {
+        if (pipeline) {
+            dumpVertexAttributes(writer, context, vertex_program);
+        } else {
+            dumpVertexAttributes(writer, context, program);
+        }
+        if (program) {
+            dumpTransformFeedback(writer, program);
+        }
     }
     writer.endObject();
     writer.endMember(); // buffers
+
+    writer.beginMember("shaderstoragebufferblocks");
+    writer.beginObject();
+    if (pipeline) {
+        dumpShadersStorageBufferBlocks(writer, context, vertex_program);
+        dumpShadersStorageBufferBlocks(writer, context, fragment_program);
+        dumpShadersStorageBufferBlocks(writer, context, geometry_program);
+        dumpShadersStorageBufferBlocks(writer, context, tess_control_program);
+        dumpShadersStorageBufferBlocks(writer, context, tess_evaluation_program);
+        dumpShadersStorageBufferBlocks(writer, context, compute_program);
+    } else if (program) {
+        dumpShadersStorageBufferBlocks(writer, context, program);
+    }
+    writer.endObject();
+    writer.endMember(); // shaderstoragebufferblocks
 }
 
 

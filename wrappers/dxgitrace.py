@@ -32,6 +32,7 @@ from specs.stdapi import API
 from specs import dxgi
 from specs import d3d10
 from specs import d3d11
+from specs import dcomp
 from specs import d3d9
 
 
@@ -98,26 +99,53 @@ class D3DCommonTracer(DllTracer):
         if interface.hasBase(*self.mapInterfaces):
             variables += [
                 ('_MAP_DESC', 'm_MapDesc', None),
+                ('MemoryShadow', 'm_MapShadow', None),
             ]
         if interface.hasBase(d3d11.ID3D11DeviceContext):
             variables += [
                 ('std::map< std::pair<ID3D11Resource *, UINT>, _MAP_DESC >', 'm_MapDescs', None),
+                ('std::map< std::pair<ID3D11Resource *, UINT>, MemoryShadow >', 'm_MapShadows', None),
+            ]
+        if interface.hasBase(d3d11.ID3D11VideoContext):
+            variables += [
+                ('std::map<UINT, std::pair<void *, UINT> >', 'm_MapDesc', None),
             ]
 
         return variables
 
     def implementWrapperInterfaceMethodBody(self, interface, base, method):
+        if method.getArgByName('pInitialData'):
+            pDesc1 = method.getArgByName('pDesc1')
+            if pDesc1 is not None:
+                print r'    %s pDesc = pDesc1;' % (pDesc1.type,)
+
         if method.name in ('Map', 'Unmap'):
             # On D3D11 Map/Unmap is not a resource method, but a context method instead.
             resourceArg = method.getArgByName('pResource')
             if resourceArg is None:
                 print '    _MAP_DESC & _MapDesc = m_MapDesc;'
+                print '    MemoryShadow & _MapShadow = m_MapShadow;'
+                print '    %s *pResourceInstance = m_pInstance;' % interface.name
             else:
                 print '    _MAP_DESC & _MapDesc = m_MapDescs[std::pair<%s, UINT>(pResource, Subresource)];' % resourceArg.type
+                print '    MemoryShadow & _MapShadow = m_MapShadows[std::pair<%s, UINT>(pResource, Subresource)];' % resourceArg.type
+                print '    Wrap%spResourceInstance = static_cast<Wrap%s>(%s);' % (resourceArg.type, resourceArg.type, resourceArg.name)
 
         if method.name == 'Unmap':
             print '    if (_MapDesc.Size && _MapDesc.pData) {'
+            print '        if (_shouldShadowMap(pResourceInstance)) {'
+            print '            _MapShadow.update(trace::fakeMemcpy);'
+            print '        } else {'
             self.emit_memcpy('_MapDesc.pData', '_MapDesc.Size')
+            print '        }'
+            print '    }'
+
+        if interface.hasBase(d3d11.ID3D11VideoContext) and \
+           method.name == 'ReleaseDecoderBuffer':
+            print '    std::map<UINT, std::pair<void *, UINT> >::iterator it = m_MapDesc.find(Type);'
+            print '    if (it != m_MapDesc.end()) {'
+            self.emit_memcpy('it->second.first', 'it->second.second')
+            print '        m_MapDesc.erase(it);'
             print '    }'
 
         DllTracer.implementWrapperInterfaceMethodBody(self, interface, base, method)
@@ -126,25 +154,60 @@ class D3DCommonTracer(DllTracer):
             # NOTE: recursive locks are explicitely forbidden
             print '    if (SUCCEEDED(_result)) {'
             print '        _getMapDesc(_this, %s, _MapDesc);' % ', '.join(method.argNames())
+            print '        if (_MapDesc.pData && _shouldShadowMap(pResourceInstance)) {'
+            if interface.name.startswith('IDXGI'):
+                print '            (void)_MapShadow;'
+            else:
+                print '            bool _discard = MapType == 4 /* D3D1[01]_MAP_WRITE_DISCARD */;'
+                print '            _MapShadow.cover(_MapDesc.pData, _MapDesc.Size, _discard);'
+            print '        }'
             print '    } else {'
             print '        _MapDesc.pData = NULL;'
             print '        _MapDesc.Size = 0;'
             print '    }'
 
+        if interface.hasBase(d3d11.ID3D11VideoContext) and \
+           method.name == 'GetDecoderBuffer':
+            print '    if (SUCCEEDED(_result)) {'
+            print '        m_MapDesc[Type] = std::make_pair(*ppBuffer, *pBufferSize);'
+            print '    } else {'
+            print '        m_MapDesc[Type] = std::make_pair(nullptr, 0);'
+            print '    }'
+
+    def invokeMethod(self, interface, base, method):
+        DllTracer.invokeMethod(self, interface, base, method)
+
+        # When D2D is used on top of WARP software rasterizer it seems to do
+        # most of its rendering via the undocumented and opaque IWarpPrivateAPI
+        # interface.  Althought hiding this interface will affect behavior,
+        # there's little point in traces that use it, as they lack enough
+        # information to replay correctly.
+        #
+        # Returning E_NOINTERFACE when for IID_IWarpPrivateAPI matches what
+        # happens when D2D is used with drivers other than WARP.
+        if method.name == 'QueryInterface':
+            print r'    if (_result == S_OK && riid == IID_IWarpPrivateAPI && ppvObj && *ppvObj) {'
+            print r'        static_cast<IUnknown *>(*ppvObj)->Release();'
+            print r'        *ppvObj = nullptr;'
+            print r'        _result = E_NOINTERFACE;'
+            print r'        os::log("apitrace: warning: hiding IWarpPrivateAPI interface\n");'
+            print r'    }'
+
+        # Ensure buffers are initialized, otherwise we can fail to detect
+        # changes when unititialized data matches what the app wrote.
+        if method.name == 'CreateBuffer':
+            print r'    if (SUCCEEDED(_result) && !pInitialData) {'
+            print r'        _initializeBuffer(_this, pDesc, *ppBuffer);'
+            print r'    }'
+
 
 if __name__ == '__main__':
-    print r'#define INITGUID'
+    print r'#include "guids_defs.hpp"'
     print
     print r'#include "trace_writer_local.hpp"'
     print r'#include "os.hpp"'
     print
-    print r'#include "d3dcommonshader.hpp"'
-    print
-    print r'#include "d3d10imports.hpp"'
-    print r'#include "d3d10size.hpp"'
-    print r'#include "d3d11imports.hpp"'
-    print r'#include "d3d11size.hpp"'
-    print r'#include "d3d9imports.hpp" // D3DPERF_*'
+    print r'#include "dxgitrace.hpp"'
     print
 
     api = API()
@@ -152,6 +215,7 @@ if __name__ == '__main__':
     api.addModule(d3d10.d3d10)
     api.addModule(d3d10.d3d10_1)
     api.addModule(d3d11.d3d11)
+    api.addModule(dcomp.dcomp)
     api.addModule(d3d9.d3dperf)
 
     tracer = D3DCommonTracer()

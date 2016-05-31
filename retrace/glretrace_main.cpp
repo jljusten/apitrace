@@ -29,6 +29,7 @@
 #include <string.h>
 
 #include <map>
+#include <sstream>
 
 #include "retrace.hpp"
 #include "glproc.hpp"
@@ -38,19 +39,18 @@
 #include "os_memory.hpp"
 #include "highlight.hpp"
 
-
 /* Synchronous debug output may reduce performance however,
  * without it the callNo in the callback may be inaccurate
  * as the callback may be called at any time.
  */
 #define DEBUG_OUTPUT_SYNCHRONOUS 0
 
+#define APITRACE_MARKER_ID 0xA3ACE001U
+
 namespace glretrace {
 
-glprofile::Profile defaultProfile(glprofile::API_GL, 1, 0);
+glfeatures::Profile defaultProfile(glfeatures::API_GL, 1, 0);
 
-bool insideList = false;
-bool insideGlBeginEnd = false;
 bool supportsARBShaderObjects = false;
 
 enum {
@@ -78,57 +78,108 @@ struct CallQuery
 static bool supportsElapsed = true;
 static bool supportsTimestamp = true;
 static bool supportsOcclusion = true;
-static bool supportsDebugOutput = true;
 
 static std::list<CallQuery> callQueries;
 
 static void APIENTRY
 debugOutputCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam);
 
+// Limit certain warnings
+// TODO: expose this via a command line option.
+static const unsigned
+maxWarningCount = 100;
+
+static std::map< uint64_t, unsigned > errorCounts;
+
 void
 checkGlError(trace::Call &call) {
     GLenum error = glGetError();
     while (error != GL_NO_ERROR) {
-        std::ostream & os = retrace::warning(call);
+        uint64_t errorHash = call.sig->id ^ uint64_t(error) << 32;
+        size_t errorCount = errorCounts[errorHash]++;
+        if (errorCount <= maxWarningCount) {
+            std::ostream & os = retrace::warning(call);
 
-        os << "glGetError(";
-        os << call.name();
-        os << ") = ";
+            os << "glGetError(";
+            os << call.name();
+            os << ") = ";
 
-        switch (error) {
-        case GL_INVALID_ENUM:
-            os << "GL_INVALID_ENUM";
-            break;
-        case GL_INVALID_VALUE:
-            os << "GL_INVALID_VALUE";
-            break;
-        case GL_INVALID_OPERATION:
-            os << "GL_INVALID_OPERATION";
-            break;
-        case GL_STACK_OVERFLOW:
-            os << "GL_STACK_OVERFLOW";
-            break;
-        case GL_STACK_UNDERFLOW:
-            os << "GL_STACK_UNDERFLOW";
-            break;
-        case GL_OUT_OF_MEMORY:
-            os << "GL_OUT_OF_MEMORY";
-            break;
-        case GL_INVALID_FRAMEBUFFER_OPERATION:
-            os << "GL_INVALID_FRAMEBUFFER_OPERATION";
-            break;
-        case GL_TABLE_TOO_LARGE:
-            os << "GL_TABLE_TOO_LARGE";
-            break;
-        default:
-            os << error;
-            break;
+            switch (error) {
+            case GL_INVALID_ENUM:
+                os << "GL_INVALID_ENUM";
+                break;
+            case GL_INVALID_VALUE:
+                os << "GL_INVALID_VALUE";
+                break;
+            case GL_INVALID_OPERATION:
+                os << "GL_INVALID_OPERATION";
+                break;
+            case GL_STACK_OVERFLOW:
+                os << "GL_STACK_OVERFLOW";
+                break;
+            case GL_STACK_UNDERFLOW:
+                os << "GL_STACK_UNDERFLOW";
+                break;
+            case GL_OUT_OF_MEMORY:
+                os << "GL_OUT_OF_MEMORY";
+                break;
+            case GL_INVALID_FRAMEBUFFER_OPERATION:
+                os << "GL_INVALID_FRAMEBUFFER_OPERATION";
+                break;
+            case GL_TABLE_TOO_LARGE:
+                os << "GL_TABLE_TOO_LARGE";
+                break;
+            default:
+                os << error;
+                break;
+            }
+
+            if (errorCount == maxWarningCount) {
+                os << ": too many identical messages; ignoring";
+            }
+
+            os << std::endl;
         }
-        os << "\n";
-    
+
         error = glGetError();
     }
 }
+
+
+void
+insertCallMarker(trace::Call &call, Context *currentContext)
+{
+    if (!currentContext ||
+        currentContext->insideBeginEnd ||
+        !currentContext->KHR_debug) {
+        return;
+    }
+
+    glfeatures::Profile currentProfile = currentContext->actualProfile();
+
+    std::ostringstream ss;
+    trace::dump(call, ss,
+                trace::DUMP_FLAG_NO_COLOR |
+                trace::DUMP_FLAG_NO_ARG_NAMES |
+                trace::DUMP_FLAG_NO_MULTILINE);
+
+    std::string msg = ss.str();
+    GLsizei length = msg.length() > currentContext->maxDebugMessageLength - 1
+                   ? currentContext->maxDebugMessageLength - 1
+                   : msg.length();
+
+    auto pfnGlDebugMessageInsert = currentProfile.desktop()
+                                 ? glDebugMessageInsert
+                                 : glDebugMessageInsertKHR;
+
+    pfnGlDebugMessageInsert(GL_DEBUG_SOURCE_THIRD_PARTY,
+                            GL_DEBUG_TYPE_MARKER,
+                            APITRACE_MARKER_ID,
+                            GL_DEBUG_SEVERITY_NOTIFICATION,
+                            length,
+                            msg.c_str());
+}
+
 
 static inline int64_t
 getCurrentTime(void) {
@@ -212,8 +263,8 @@ completeCallQuery(CallQuery& query) {
 
 void
 flushQueries() {
-    for (std::list<CallQuery>::iterator itr = callQueries.begin(); itr != callQueries.end(); ++itr) {
-        completeCallQuery(*itr);
+    for (auto & callQuerie : callQueries) {
+        completeCallQuery(callQuerie);
     }
 
     callQueries.clear();
@@ -221,6 +272,32 @@ flushQueries() {
 
 void
 beginProfile(trace::Call &call, bool isDraw) {
+    if (retrace::profilingWithBackends) {
+        if (profilingBoundaries[QUERY_BOUNDARY_CALL] ||
+            profilingBoundaries[QUERY_BOUNDARY_DRAWCALL]) {
+            if (curMetricBackend) {
+                curMetricBackend->beginQuery(isDraw ? QUERY_BOUNDARY_DRAWCALL : QUERY_BOUNDARY_CALL);
+            }
+            if (isLastPass() && curMetricBackend) {
+                Context *currentContext = getCurrentContext();
+                GLuint program = currentContext ? currentContext->currentUserProgram : 0;
+                unsigned eventId = profilingBoundariesIndex[QUERY_BOUNDARY_CALL]++;
+                ProfilerCall::data callData = {false,
+                                               call.no,
+                                               program,
+                                               call.sig->name};
+                if (profilingBoundaries[QUERY_BOUNDARY_CALL]) {
+                    profiler.addQuery(QUERY_BOUNDARY_CALL, eventId, &callData);
+                }
+                if (isDraw && profilingBoundaries[QUERY_BOUNDARY_DRAWCALL]) {
+                    eventId = profilingBoundariesIndex[QUERY_BOUNDARY_DRAWCALL]++;
+                    profiler.addQuery(QUERY_BOUNDARY_DRAWCALL, eventId, &callData);
+                }
+            }
+        }
+        return;
+    }
+
     glretrace::Context *currentContext = glretrace::getCurrentContext();
 
     /* Create call query */
@@ -228,7 +305,7 @@ beginProfile(trace::Call &call, bool isDraw) {
     query.isDraw = isDraw;
     query.call = call.no;
     query.sig = call.sig;
-    query.program = currentContext ? currentContext->activeProgram : 0;
+    query.program = currentContext ? currentContext->currentUserProgram : 0;
 
     glGenQueries(NUM_QUERIES, query.ids);
 
@@ -264,6 +341,15 @@ beginProfile(trace::Call &call, bool isDraw) {
 
 void
 endProfile(trace::Call &call, bool isDraw) {
+    if (retrace::profilingWithBackends) {
+        if (profilingBoundaries[QUERY_BOUNDARY_CALL] ||
+            profilingBoundaries[QUERY_BOUNDARY_DRAWCALL]) {
+            if (curMetricBackend) {
+                curMetricBackend->endQuery(isDraw ? QUERY_BOUNDARY_DRAWCALL : QUERY_BOUNDARY_CALL);
+            }
+        }
+        return;
+    }
 
     /* CPU profiling for all calls */
     if (retrace::profilingCpuTimes) {
@@ -344,35 +430,19 @@ initContext() {
     glretrace::Context *currentContext = glretrace::getCurrentContext();
     assert(currentContext);
 
-    /* Ensure we got a matching profile.
-     *
-     * In particular on MacOSX, there is no way to specify specific versions, so this is all we can do.
-     *
-     * Also, see if OpenGL ES can be handled through ARB_ES*_compatibility.
-     */
-    glprofile::Profile expectedProfile = currentContext->wsContext->profile;
-    glprofile::Profile currentProfile = glprofile::getCurrentContextProfile();
-    if (!currentProfile.matches(expectedProfile)) {
-        if (expectedProfile.api == glprofile::API_GLES &&
-            currentProfile.api == glprofile::API_GL &&
-            ((expectedProfile.major == 2 && currentContext->hasExtension("GL_ARB_ES2_compatibility")) ||
-             (expectedProfile.major == 3 && currentContext->hasExtension("GL_ARB_ES3_compatibility")))) {
-            std::cerr << "warning: context mismatch:"
-                      << " expected " << expectedProfile << ","
-                      << " but got " << currentProfile << " with GL_ARB_ES" << expectedProfile.major << "_compatibility\n";
-        } else {
-            std::cerr << "error: context mismatch: expected " << expectedProfile << ", but got " << currentProfile << "\n";
-            exit(1);
-        }
-    }
-
     /* Ensure we have adequate extension support */
-    supportsTimestamp   = currentProfile.versionGreaterOrEqual(glprofile::API_GL, 3, 3) ||
+    glfeatures::Profile currentProfile = currentContext->actualProfile();
+    supportsTimestamp   = currentProfile.versionGreaterOrEqual(glfeatures::API_GL, 3, 3) ||
                           currentContext->hasExtension("GL_ARB_timer_query");
     supportsElapsed     = currentContext->hasExtension("GL_EXT_timer_query") || supportsTimestamp;
-    supportsOcclusion   = currentProfile.versionGreaterOrEqual(glprofile::API_GL, 1, 5);
-    supportsDebugOutput = currentContext->hasExtension("GL_ARB_debug_output");
+    supportsOcclusion   = currentProfile.versionGreaterOrEqual(glfeatures::API_GL, 1, 5);
     supportsARBShaderObjects = currentContext->hasExtension("GL_ARB_shader_objects");
+
+    currentContext->KHR_debug = currentContext->hasExtension("GL_KHR_debug");
+    if (currentContext->KHR_debug) {
+        glGetIntegerv(GL_MAX_DEBUG_MESSAGE_LENGTH, &currentContext->maxDebugMessageLength);
+        assert(currentContext->maxDebugMessageLength > 1);
+    }
 
 #ifdef __APPLE__
     // GL_TIMESTAMP doesn't work on Apple.  GL_TIME_ELAPSED still does however.
@@ -383,7 +453,7 @@ initContext() {
     /* Check for timer query support */
     if (retrace::profilingGpuTimes) {
         if (!supportsTimestamp && !supportsElapsed) {
-            std::cout << "Error: Cannot run profile, GL_ARB_timer_query or GL_EXT_timer_query extensions are not supported." << std::endl;
+            std::cout << "error: cannot profile, GL_ARB_timer_query or GL_EXT_timer_query extensions are not supported." << std::endl;
             exit(-1);
         }
 
@@ -391,25 +461,38 @@ initContext() {
         glGetQueryiv(GL_TIME_ELAPSED, GL_QUERY_COUNTER_BITS, &bits);
 
         if (!bits) {
-            std::cout << "Error: Cannot run profile, GL_QUERY_COUNTER_BITS == 0." << std::endl;
+            std::cout << "error: cannot profile, GL_QUERY_COUNTER_BITS == 0." << std::endl;
             exit(-1);
         }
     }
 
     /* Check for occlusion query support */
     if (retrace::profilingPixelsDrawn && !supportsOcclusion) {
-        std::cout << "Error: Cannot run profile, GL_ARB_occlusion_query extension is not supported." << std::endl;
+        std::cout << "error: cannot profile, GL_ARB_occlusion_query extension is not supported (" << currentProfile << ")" << std::endl;
         exit(-1);
     }
 
     /* Setup debug message call back */
-    if (retrace::debug && supportsDebugOutput) {
-        glretrace::Context *currentContext = glretrace::getCurrentContext();
-        glDebugMessageControlARB(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, 0, GL_TRUE);
-        glDebugMessageCallbackARB(&debugOutputCallback, currentContext);
+    if (retrace::debug) {
+        if (currentContext->KHR_debug) {
+            if (currentProfile.desktop()) {
+                glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, 0, GL_TRUE);
+                glDebugMessageCallback(&debugOutputCallback, currentContext);
+            } else {
+                glDebugMessageControlKHR(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, 0, GL_TRUE);
+                glDebugMessageCallbackKHR(&debugOutputCallback, currentContext);
+            }
 
-        if (DEBUG_OUTPUT_SYNCHRONOUS) {
-            glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_ARB);
+            if (DEBUG_OUTPUT_SYNCHRONOUS) {
+                glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+            }
+        } else if (currentContext->hasExtension("GL_ARB_debug_output")) {
+            glDebugMessageControlARB(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, 0, GL_TRUE);
+            glDebugMessageCallbackARB(&debugOutputCallback, currentContext);
+
+            if (DEBUG_OUTPUT_SYNCHRONOUS) {
+                glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_ARB);
+            }
         }
     }
 
@@ -434,7 +517,32 @@ initContext() {
 
 void
 frame_complete(trace::Call &call) {
-    if (retrace::profiling) {
+    if (retrace::profilingWithBackends) {
+        if (profilingBoundaries[QUERY_BOUNDARY_CALL] ||
+            profilingBoundaries[QUERY_BOUNDARY_DRAWCALL])
+        {
+            if (isLastPass() && curMetricBackend) {
+                // frame end indicator
+                ProfilerCall::data callData = {true, 0, 0, ""};
+                if (profilingBoundaries[QUERY_BOUNDARY_CALL]) {
+                    profiler.addQuery(QUERY_BOUNDARY_CALL, 0, &callData);
+                }
+                if (profilingBoundaries[QUERY_BOUNDARY_DRAWCALL]) {
+                    profiler.addQuery(QUERY_BOUNDARY_DRAWCALL, 0, &callData);
+                }
+            }
+        }
+        if (curMetricBackend) {
+            curMetricBackend->endQuery(QUERY_BOUNDARY_FRAME);
+        }
+        if (profilingBoundaries[QUERY_BOUNDARY_FRAME]) {
+            if (isLastPass() && curMetricBackend) {
+                profiler.addQuery(QUERY_BOUNDARY_FRAME,
+                        profilingBoundariesIndex[QUERY_BOUNDARY_FRAME]++);
+            }
+        }
+    }
+    else if (retrace::profiling) {
         /* Complete any remaining queries */
         flushQueries();
 
@@ -456,13 +564,83 @@ frame_complete(trace::Call &call) {
         !currentDrawable->visible) {
         retrace::warning(call) << "could not infer drawable size (glViewport never called)\n";
     }
+
+    if (curMetricBackend) {
+        curMetricBackend->beginQuery(QUERY_BOUNDARY_FRAME);
+    }
 }
 
+void
+beforeContextSwitch()
+{
+    if (profilingContextAcquired && retrace::profilingWithBackends &&
+        curMetricBackend)
+    {
+        curMetricBackend->pausePass();
+    }
+}
 
-// Limit messages
-// TODO: expose this via a command line option.
-static const unsigned
-maxMessageCount = 100;
+void
+afterContextSwitch()
+{
+
+    if (retrace::profilingListMetrics) {
+        listMetricsCLI();
+        exit(0);
+    }
+
+    if (retrace::profilingWithBackends) {
+        if (!metricBackendsSetup) {
+            if (retrace::profilingCallsMetricsString) {
+                enableMetricsFromCLI(retrace::profilingCallsMetricsString,
+                                     QUERY_BOUNDARY_CALL);
+            }
+            if (retrace::profilingFramesMetricsString) {
+                enableMetricsFromCLI(retrace::profilingFramesMetricsString,
+                                     QUERY_BOUNDARY_FRAME);
+            }
+            if (retrace::profilingDrawCallsMetricsString) {
+                enableMetricsFromCLI(retrace::profilingDrawCallsMetricsString,
+                                     QUERY_BOUNDARY_DRAWCALL);
+            }
+            unsigned numPasses = 0;
+            for (auto &b : metricBackends) {
+                b->generatePasses();
+                numPasses += b->getNumPasses();
+            }
+            retrace::numPasses = numPasses > 0 ? numPasses : 1;
+            if (retrace::profilingNumPasses) {
+                std::cout << retrace::numPasses << std::endl;
+                exit(0);
+            }
+            metricBackendsSetup = true;
+        }
+
+        if (!profilingContextAcquired) {
+            unsigned numPasses = 0;
+            for (auto &b : metricBackends) {
+                numPasses += b->getNumPasses();
+                if (retrace::curPass < numPasses) {
+                    curMetricBackend = b;
+                    b->beginPass(); // begin pass
+                    break;
+                }
+            }
+
+            if (curMetricBackend) {
+                curMetricBackend->beginQuery(QUERY_BOUNDARY_FRAME);
+            }
+
+            profilingContextAcquired = true;
+            return;
+        }
+
+        if (curMetricBackend) {
+            curMetricBackend->continuePass();
+        }
+    }
+}
+
 
 static std::map< uint64_t, unsigned > messageCounts;
 
@@ -474,6 +652,11 @@ debugOutputCallback(GLenum source, GLenum type, GLuint id, GLenum severity,
     /* Ignore application messages while dumping state. */
     if (retrace::dumpingState &&
         source == GL_DEBUG_SOURCE_APPLICATION) {
+        return;
+    }
+    if (retrace::markers &&
+        source == GL_DEBUG_SOURCE_THIRD_PARTY &&
+        id == APITRACE_MARKER_ID) {
         return;
     }
 
@@ -492,7 +675,7 @@ debugOutputCallback(GLenum source, GLenum type, GLuint id, GLenum severity,
                          + ((uint64_t)type     << 32)
                          + ((uint64_t)source   << 48);
     size_t messageCount = messageCounts[messageHash]++;
-    if (messageCount > maxMessageCount) {
+    if (messageCount > maxWarningCount) {
         return;
     }
 
@@ -584,7 +767,7 @@ debugOutputCallback(GLenum source, GLenum type, GLuint id, GLenum severity,
 
     std::cerr << ": ";
 
-    if (messageCount == maxMessageCount) {
+    if (messageCount == maxWarningCount) {
         std::cerr << "too many identical messages; ignoring"
                   << highlighter.normal()
                   << std::endl;
@@ -610,7 +793,7 @@ debugOutputCallback(GLenum source, GLenum type, GLuint id, GLenum severity,
 class GLDumper : public retrace::Dumper {
 public:
     image::Image *
-    getSnapshot(void) {
+    getSnapshot(void) override {
         if (!glretrace::getCurrentContext()) {
             return NULL;
         }
@@ -618,10 +801,10 @@ public:
     }
 
     bool
-    canDump(void) {
+    canDump(void) override {
         glretrace::Context *currentContext = glretrace::getCurrentContext();
-        if (glretrace::insideGlBeginEnd ||
-            !currentContext) {
+        if (!currentContext ||
+            currentContext->insideBeginEnd) {
             return false;
         }
 
@@ -629,7 +812,7 @@ public:
     }
 
     void
-    dumpState(StateWriter &writer) {
+    dumpState(StateWriter &writer) override {
         glstate::dumpCurrentContext(writer);
     }
 };
@@ -640,7 +823,7 @@ static GLDumper glDumper;
 void
 retrace::setFeatureLevel(const char *featureLevel)
 {
-    glretrace::defaultProfile = glprofile::Profile(glprofile::API_GL, 3, 2, true);
+    glretrace::defaultProfile = glfeatures::Profile(glfeatures::API_GL, 3, 2, true);
 }
 
 
@@ -667,14 +850,47 @@ retrace::flushRendering(void) {
     glretrace::Context *currentContext = glretrace::getCurrentContext();
     if (currentContext) {
         glretrace::flushQueries();
+        if (currentContext->needsFlush) {
+            glFlush();
+            currentContext->needsFlush = false;
+        }
     }
 }
 
 void
 retrace::finishRendering(void) {
+    if (profilingWithBackends && glretrace::curMetricBackend) {
+            (glretrace::curMetricBackend)->endQuery(QUERY_BOUNDARY_FRAME);
+    }
+    if (glretrace::profilingBoundaries[QUERY_BOUNDARY_FRAME]) {
+        if (glretrace::isLastPass() && glretrace::curMetricBackend) {
+            glretrace::profiler.addQuery(QUERY_BOUNDARY_FRAME,
+                    glretrace::profilingBoundariesIndex[QUERY_BOUNDARY_FRAME]++);
+        }
+    }
+
     glretrace::Context *currentContext = glretrace::getCurrentContext();
     if (currentContext) {
         glFinish();
+    }
+
+    if (retrace::profilingWithBackends) {
+        if (glretrace::curMetricBackend) {
+            (glretrace::curMetricBackend)->endPass();
+            glretrace::profilingContextAcquired = false;
+        }
+
+        if (glretrace::isLastPass()) {
+            if (glretrace::profilingBoundaries[QUERY_BOUNDARY_FRAME]) {
+                glretrace::profiler.writeAll(QUERY_BOUNDARY_FRAME);
+            }
+            if (glretrace::profilingBoundaries[QUERY_BOUNDARY_CALL]) {
+                glretrace::profiler.writeAll(QUERY_BOUNDARY_CALL);
+            }
+            if (glretrace::profilingBoundaries[QUERY_BOUNDARY_DRAWCALL]) {
+                glretrace::profiler.writeAll(QUERY_BOUNDARY_DRAWCALL);
+            }
+        }
     }
 }
 

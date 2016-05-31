@@ -1,13 +1,9 @@
-cmake_minimum_required (VERSION 2.8.11)
-
-
-# Use clang on MacOSX. gcc doesn't support __thread key, and Apple has
-# abandoned it for clang.  This must be done before the project is defined.
-# But DONT force clang if we are cross-compiling to Android.
-if (APPLE AND NOT ANDROID_NDK)
-    set (CMAKE_C_COMPILER "clang")
-    set (CMAKE_CXX_COMPILER "clang++")
+if (MSVC)
+    cmake_minimum_required (VERSION 3.4.0)
+else ()
+    cmake_minimum_required (VERSION 2.8.11)
 endif ()
+
 
 if (CMAKE_GENERATOR STREQUAL "Xcode")
     message (FATAL_ERROR "Xcode generator is not supported. Please build with \"Unix Makefiles\" or \"Ninja\" generators.")
@@ -36,6 +32,8 @@ endif ()
 # prescribed in http://www.gentoo.org/proj/en/qa/automagic.xml
 set (ENABLE_GUI "AUTO" CACHE STRING "Enable Qt GUI.")
 
+option (WINDOWS_XP "Target Windows XP (on MinGW)" OFF)
+
 option (ENABLE_CLI "Enable command Line interface." ON)
 
 option (ENABLE_EGL "Enable EGL support." ON)
@@ -43,6 +41,8 @@ option (ENABLE_EGL "Enable EGL support." ON)
 option (ENABLE_WAFFLE "Enable WAFFLE support." OFF)
 
 option (ENABLE_FRAME_POINTER "Disable frame pointer omission" ON)
+
+option (ENABLE_ASAN "Enable Address Sanitizer" OFF)
 
 # Proprietary Linux games often ship their own libraries (zlib, libstdc++,
 # etc.) in order to ship a single set of binaries across multiple
@@ -67,6 +67,7 @@ if (NOT ANDROID)
                 "dependencies."
             )
         endif ()
+        option (ENABLE_STATIC_EXE "Statically link executables" OFF)
     endif ()
 endif ()
 
@@ -104,7 +105,7 @@ endif ()
 
 find_package (Threads)
 
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ENABLE_STATIC_EXE)
     find_package (procps)
     if (PROCPS_FOUND)
         add_definitions (-DHAVE_READPROC_H)
@@ -119,11 +120,43 @@ if (ENABLE_GUI)
         cmake_policy (SET CMP0020 NEW)
     endif()
     find_package (Qt5Widgets ${REQUIRE_GUI})
-    find_package (Qt5WebKitWidgets ${REQUIRE_GUI})
+    find_package (Qt5Network ${REQUIRE_GUI})
+endif ()
+
+if (MSVC)
+    if (${MSVC_VERSION} LESS 1800)
+        message (FATAL_ERROR "Visual Studio 2013 or later required")
+    endif ()
+
+    include (Windows10SDK)
 endif ()
 
 if (WIN32)
+    if (CMAKE_GENERATOR_TOOLSET MATCHES "_xp$")
+        set (WINDOWS_XP TRUE)
+    endif ()
+
+    # http://msdn.microsoft.com/en-us/library/aa383745.aspx
+    if (WINDOWS_XP)
+        # Windows XP
+        add_definitions (-D_WIN32_WINNT=0x0501 -DWINVER=0x0501)
+    else ()
+        # Windows 8
+        add_definitions (-D_WIN32_WINNT=0x0602 -DWINVER=0x0602)
+    endif ()
+
     find_package (DirectX)
+
+    if (WINDOWS_XP)
+        set (DirectX_D3D11_3_INCLUDE_FOUND FALSE)
+    elseif (DEFINED MSVC_VERSION AND NOT DirectX_D3D11_3_INCLUDE_FOUND)
+        if (${MSVC_VERSION} LESS 1900)
+            message (FATAL_ERROR "Windows 10 SDK (https://dev.windows.com/en-us/downloads/windows-10-sdk) must be installed for D3D11.3 support")
+        else ()
+            message (FATAL_ERROR "Windows 10 SDK must be selected (-DCMAKE_SYSTEM_VERSION=10.0) for D3D11.3 support")
+        endif ()
+    endif ()
+
     set (ENABLE_EGL false)
 elseif (APPLE)
     set (ENABLE_EGL false)
@@ -140,9 +173,9 @@ else ()
     endif ()
 endif ()
 
-if (ENABLE_EGL AND (ANDROID OR ENABLE_WAFFLE))
-    # if waffle is found eglretrace will be built for Android.
-    find_package (Waffle)
+if (ENABLE_EGL AND ENABLE_WAFFLE)
+    # Use Waffle for eglretrace
+    find_package (Waffle REQUIRED)
 endif ()
 
 
@@ -167,17 +200,10 @@ endmacro ()
 
 add_definitions (
     -D__STDC_LIMIT_MACROS
+    -D__STDC_FORMAT_MACROS
 )
 
 if (WIN32)
-    # http://msdn.microsoft.com/en-us/library/aa383745.aspx
-    if (MINGW OR CMAKE_GENERATOR_TOOLSET MATCHES "_xp$")
-        # Windows XP
-        add_definitions (-D_WIN32_WINNT=0x0501 -DWINVER=0x0501)
-    else ()
-        # Windows 7
-        add_definitions (-D_WIN32_WINNT=0x0601 -DWINVER=0x0601)
-    endif ()
 else (WIN32)
     CHECK_CXX_COMPILER_FLAG("-fvisibility=hidden" CXX_COMPILER_FLAG_VISIBILITY)
     if (CXX_COMPILER_FLAG_VISIBILITY)
@@ -186,10 +212,6 @@ else (WIN32)
 endif ()
 
 if (MSVC)
-    if (${MSVC_VERSION} LESS 1800)
-        message (FATAL_ERROR "Visual Studio 2013 or later required")
-    endif ()
-
     # No RTTI required
     string (REGEX REPLACE "/GR *" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GR-")
@@ -242,16 +264,14 @@ else ()
     check_cxx_compiler_flag ("-std=gnu++11" CXX_COMPILER_FLAG_STD_GNUXX11)
     if (CXX_COMPILER_FLAG_STD_GNUXX11)
         set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11")
-    elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        check_cxx_compiler_flag ("-std=gnu++0x" CXX_COMPILER_FLAG_STD_GNUXX0X)
-        if (NOT CXX_COMPILER_FLAG_STD_GNUXX0X OR
-            CMAKE_CXX_COMPILER_VERSION VERSION_LESS "4.6")
-            message (FATAL_ERROR "GCC 4.6 or later required for adequate C++11 support")
-        else ()
-            set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++0x")
-        endif ()
     else ()
         message (FATAL_ERROR "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} compiler does not support C++11")
+    endif ()
+
+    # We require at least GCC 4.9 for decent C++11 support
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+        CMAKE_CXX_COMPILER_VERSION VERSION_LESS "4.9")
+        message (FATAL_ERROR "GCC 4.9 or later required -- https://github.com/apitrace/apitrace/wiki/GCC")
     endif ()
 
     # Adjust warnings
@@ -271,38 +291,27 @@ else ()
     endif ()
 
     # Disable C++ exceptions
-    #set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions")
 
-    # Enable stack protection
-    if (CMAKE_COMPILER_IS_GNUCC AND CMAKE_COMPILER_IS_GNUCXX)
-        set (CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -fstack-protector-all")
-        set (CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fstack-protector-all")
-        if (MINGW)
-            # MinGW doesn't link against libssp automatically, and furthermore
-            # we want static linking.
-            set (SSP_LIBRARY "-Wl,-Bstatic -lssp -Wl,-Bdynamic")
-            set (CMAKE_C_STANDARD_LIBRARIES "${SSP_LIBRARY} ${CMAKE_C_STANDARD_LIBRARIES}")
-            set (CMAKE_CXX_STANDARD_LIBRARIES "${SSP_LIBRARY} ${CMAKE_CXX_STANDARD_LIBRARIES}")
-        endif ()
+    # Enable Address Sanitizer
+    if (ENABLE_ASAN)
+        add_compiler_flags (-fsanitize=address)
+        add_linker_flags (-fsanitize=address)
     endif ()
 
     # Enable SSE2 intrinsics on x86
-    if (CMAKE_SIZEOF_VOID_P EQUAL 4)
-        check_cxx_compiler_flag ("-msse2" CXX_COMPILER_FLAG_MSSE2)
-        if (CXX_COMPILER_FLAG_MSSE2)
-            add_compiler_flags (-msse2 -mfpmath=sse)
+    if (MINGW AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+        add_compiler_flags (-msse2 -mfpmath=sse)
 
-            # And tell GCC to assume 4 bytes alignment, many Linux/Windows
-            # applications only guarantee that, but not on systems where ABI
-            # clearly states otherwise.
-            #
-            # See https://gcc.gnu.org/bugzilla/show_bug.cgi?id=38496
-            if (NOT ANDROID)
-                check_cxx_compiler_flag (-mincoming-stack-boundary=2 CXX_COMPILER_FLAG_MINCOMING_STACK_BOUNDARY)
-                if (CXX_COMPILER_FLAG_MINCOMING_STACK_BOUNDARY)
-                    add_compiler_flags (-mincoming-stack-boundary=2)
-                endif ()
-            endif ()
+        # And tell GCC to assume 4 bytes alignment, many Linux/Windows
+        # applications only guarantee that, but not on systems where ABI
+        # clearly states otherwise.
+        #
+        # See https://gcc.gnu.org/bugzilla/show_bug.cgi?id=38496
+        if (CMAKE_CXX_COMPILER_ID MATCHES Clang)
+            add_compiler_flags (-mstackrealign)
+        else ()
+            add_compiler_flags (-mincoming-stack-boundary=2)
         endif ()
     endif ()
 
@@ -310,7 +319,7 @@ else ()
     add_compiler_flags (-fmessage-length=0)
 endif ()
 
-if (CMAKE_CXX_COMPILER_ID STREQUAL Clang AND CMAKE_BUILD_TYPE MATCHES Rel)
+if (CMAKE_CXX_COMPILER_ID MATCHES Clang AND CMAKE_BUILD_TYPE MATCHES Rel)
     message (WARNING
         "\n"
         "  WARNING: NON-DEBUG BUILDS ON CLANG CAN TAKE UP TO 45MIN!\n"
@@ -323,6 +332,8 @@ endif ()
 if (MINGW)
     # Avoid depending on MinGW runtime DLLs
     add_linker_flags (-static-libgcc -static-libstdc++)
+elseif (ENABLE_STATIC_EXE)
+    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
 endif ()
 
 if (ENABLE_FRAME_POINTER)
@@ -354,9 +365,30 @@ if (HAVE_BIGENDIAN)
     add_definitions (-DHAVE_BIGENDIAN)
 endif ()
 
+# Force certain components to always be built as release
+macro (force_release_build)
+    if (MSVC)
+        # TODO: Needs special care due since runtime must match
+    else ()
+        set (CMAKE_C_FLAGS_DEBUG ${CMAKE_C_FLAGS_RELWITHDEBINFO})
+        set (CMAKE_CXX_FLAGS_DEBUG ${CMAKE_CXX_FLAGS_RELWITHDEBINFO})
+    endif ()
+endmacro ()
+
 # Put all executables into the same top level build directory, regardless of
 # which subdirectory they are declared
 set (CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+enable_testing ()
+if (CMAKE_CROSSCOMPILING)
+    add_custom_target (check)
+elseif (DEFINED CMAKE_BUILD_TYPE)
+    # Single configuration
+    add_custom_target (check COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure)
+else ()
+    # Multiple configuration
+    add_custom_target (check COMMAND ${CMAKE_CTEST_COMMAND} -C "$<CONFIG>" --output-on-failure)
+endif ()
 
 
 ##############################################################################
@@ -374,11 +406,11 @@ endif()
 if (WIN32 OR APPLE)
     # On Windows/MacOSX, applications are usually installed on a directory of
     # their own
-    set (DOC_INSTALL_DIR doc)
+    set (DOC_DEFAULT_INSTALL_DIR doc)
     set (LIB_INSTALL_DIR lib)
     set (LIB_ARCH_INSTALL_DIR lib)
 else ()
-    set (DOC_INSTALL_DIR share/doc/${CMAKE_PROJECT_NAME})
+    set (DOC_DEFAULT_INSTALL_DIR share/doc/${CMAKE_PROJECT_NAME})
     set (LIB_INSTALL_DIR lib${LIB_SUFFIX}/${CMAKE_PROJECT_NAME})
     if (ARCH_SUBDIR)
         set (LIB_ARCH_INSTALL_DIR lib/${ARCH_SUBDIR}/${CMAKE_PROJECT_NAME})
@@ -386,6 +418,10 @@ else ()
         set (LIB_ARCH_INSTALL_DIR lib${LIB_SUFFIX}/${CMAKE_PROJECT_NAME})
     endif ()
 endif ()
+
+# Allow customization of the doc installation dir (Slackware uses different
+# location)
+set (DOC_INSTALL_DIR "${DOC_DEFAULT_INSTALL_DIR}" CACHE STRING "Documentation installation directory")
 
 set (SCRIPTS_INSTALL_DIR ${LIB_INSTALL_DIR}/scripts)
 set (WRAPPER_INSTALL_DIR ${LIB_ARCH_INSTALL_DIR}/wrappers)
@@ -399,22 +435,28 @@ set (WRAPPER_INSTALL_DIR ${LIB_ARCH_INSTALL_DIR}/wrappers)
 # - on unices to prevent symbol collisions when tracing applications that link
 # against other versions of these libraries
 
+include_directories (${CMAKE_CURRENT_SOURCE_DIR}/compat)
+
 if (NOT ENABLE_STATIC_SNAPPY)
     find_package (SNAPPY)
 endif ()
 if (ENABLE_STATIC_SNAPPY OR NOT SNAPPY_FOUND)
+    message (STATUS "Using bundled SNAPPY")
     set (SNAPPY_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/snappy)
     set (SNAPPY_LIBRARIES snappy_bundled)
     add_subdirectory (thirdparty/snappy)
 endif ()
 include_directories (${SNAPPY_INCLUDE_DIRS})
 
-if (NOT WIN32)
+add_subdirectory (thirdparty/brotli)
+
+if (NOT WIN32 AND NOT ENABLE_STATIC_EXE)
     # zlib 1.2.4-1.2.5 made it impossible to read the last block of incomplete
     # gzip traces (e.g., apitrace-tests/traces/zlib-no-eof.trace).
     find_package (ZLIB 1.2.6)
 endif ()
 if (NOT ZLIB_FOUND)
+    message (STATUS "Using bundled ZLIB")
     set (ZLIB_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/zlib)
     set (ZLIB_LIBRARIES z_bundled)
     add_subdirectory (thirdparty/zlib)
@@ -425,10 +467,11 @@ include_directories (${ZLIB_INCLUDE_DIRS})
 # version), adding its include dirs and libraries, and overwriting ZLIB_FOUND.
 # So if the system's ZLIB was did not meet the our requirements, then there's
 # no safe way to use the system's PNG library.
-if (NOT WIN32 AND ZLIB_FOUND)
+if (NOT WIN32 AND NOT ENABLE_STATIC_EXE AND ZLIB_FOUND)
     find_package (PNG)
 endif ()
 if (NOT PNG_FOUND)
+    message (STATUS "Using bundled PNG")
     set (PNG_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/libpng)
     set (PNG_DEFINITIONS "")
     set (PNG_LIBRARIES png_bundled)
@@ -446,6 +489,8 @@ if (WIN32)
     add_subdirectory (thirdparty/directxtex)
     add_subdirectory (thirdparty/devcon)
 endif ()
+
+add_subdirectory (thirdparty/crc32c)
 
 if (CMAKE_EXECUTABLE_FORMAT STREQUAL "ELF")
     add_subdirectory (thirdparty/libbacktrace)
@@ -470,68 +515,28 @@ add_library (gtest ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/gtest/src/gtest-all.cc
 set_property (TARGET gtest APPEND PROPERTY INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/gtest)
 target_link_libraries (gtest ${CMAKE_THREAD_LIBS_INIT})
 
-enable_testing ()
-add_custom_target (check COMMAND ${CMAKE_CTEST_COMMAND})
+# Convenience macro for adding unit tests
+macro (add_gtest)
+    add_executable (${ARGV})
+    target_link_libraries (${ARGV0} gtest)
+    add_dependencies (check ${ARGV0})
+    add_test (NAME ${ARGV0} COMMAND $<TARGET_FILE:${ARGV0}>)
+endmacro ()
 
 
 ##############################################################################
 # Common libraries / utilities
 
 include_directories (
-    ${CMAKE_CURRENT_SOURCE_DIR}/common
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/trace
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/os
+    ${CMAKE_CURRENT_SOURCE_DIR}/compat
 )
 
-if (WIN32)
-    set (os os_win32.cpp)
-else ()
-    set (os os_posix.cpp)
-endif ()
-
-add_convenience_library (common
-    common/trace_callset.cpp
-    common/trace_dump.cpp
-    common/trace_fast_callset.cpp
-    common/trace_file.cpp
-    common/trace_file_read.cpp
-    common/trace_file_write.cpp
-    common/trace_file_zlib.cpp
-    common/trace_file_snappy.cpp
-    common/trace_model.cpp
-    common/trace_parser.cpp
-    common/trace_parser_flags.cpp
-    common/trace_writer.cpp
-    common/trace_writer_local.cpp
-    common/trace_writer_model.cpp
-    common/trace_loader.cpp
-    common/trace_profiler.cpp
-    common/trace_option.cpp
-    common/${os}
-    common/os_backtrace.cpp
-    common/highlight.cpp
-)
-
-target_link_libraries (common
-    ${LIBBACKTRACE_LIBRARIES}
-)
-if (WIN32)
-    target_link_libraries (common
-        shell32
-    )
-endif ()
-if (ANDROID)
-    target_link_libraries (common
-        log
-    )
-endif ()
-
-
-##############################################################################
-# Sub-directories
-
+add_subdirectory (lib)
 add_subdirectory (dispatch)
 add_subdirectory (helpers)
 add_subdirectory (wrappers)
-add_subdirectory (image)
 add_subdirectory (retrace)
 
 
@@ -543,38 +548,14 @@ if (ENABLE_CLI)
         add_subdirectory (inject)
     endif ()
     add_subdirectory (cli)
+    add_subdirectory (scripts)
 endif ()
 
-##############################################################################
-# Scripts (to support the CLI)
-
-install (
-    PROGRAMS
-        scripts/highlight.py
-        scripts/jsondiff.py
-        scripts/profileshader.py
-        scripts/retracediff.py
-        scripts/snapdiff.py
-        scripts/tracecheck.py
-        scripts/tracediff.py
-        scripts/unpickle.py
-    DESTINATION ${SCRIPTS_INSTALL_DIR}
-)
-if (WIN32)
-    install (
-        PROGRAMS scripts/convert.py
-        DESTINATION ${SCRIPTS_INSTALL_DIR}
-    )
-    install (
-        FILES scripts/apitrace.PIXExp
-        DESTINATION ${SCRIPTS_INSTALL_DIR}
-    )
-endif ()
 
 ##############################################################################
 # GUI
 
-if (ENABLE_GUI AND Qt5Widgets_FOUND AND Qt5WebKitWidgets_FOUND)
+if (ENABLE_GUI AND Qt5Widgets_FOUND AND Qt5Network_FOUND)
   add_subdirectory(gui)
 endif ()
 

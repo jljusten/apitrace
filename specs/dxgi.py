@@ -129,6 +129,22 @@ DXGI_FORMAT = Enum("DXGI_FORMAT", [
     "DXGI_FORMAT_BC7_TYPELESS",
     "DXGI_FORMAT_BC7_UNORM",
     "DXGI_FORMAT_BC7_UNORM_SRGB",
+    "DXGI_FORMAT_AYUV",
+    "DXGI_FORMAT_Y410",
+    "DXGI_FORMAT_Y416",
+    "DXGI_FORMAT_NV12",
+    "DXGI_FORMAT_P010",
+    "DXGI_FORMAT_P016",
+    "DXGI_FORMAT_420_OPAQUE",
+    "DXGI_FORMAT_YUY2",
+    "DXGI_FORMAT_Y210",
+    "DXGI_FORMAT_Y216",
+    "DXGI_FORMAT_NV11",
+    "DXGI_FORMAT_AI44",
+    "DXGI_FORMAT_IA44",
+    "DXGI_FORMAT_P8",
+    "DXGI_FORMAT_A8P8",
+    "DXGI_FORMAT_B4G4R4A4_UNORM",
 ])
 
 
@@ -155,6 +171,9 @@ HRESULT = MAKE_HRESULT([
     "DXGI_ERROR_NOT_CURRENTLY_AVAILABLE",
     "DXGI_ERROR_REMOTE_CLIENT_DISCONNECTED",
     "DXGI_ERROR_REMOTE_OUTOFMEMORY",
+    # IDXGIKeyedMutex::AcquireSync
+    "WAIT_ABANDONED",
+    "WAIT_TIMEOUT",
 ])
 
 
@@ -317,12 +336,20 @@ DXGI_SURFACE_DESC = Struct("DXGI_SURFACE_DESC", [
 DXGI_SWAP_EFFECT = Enum("DXGI_SWAP_EFFECT", [
     "DXGI_SWAP_EFFECT_DISCARD",
     "DXGI_SWAP_EFFECT_SEQUENTIAL",
+    "DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL",
 ])
 
 DXGI_SWAP_CHAIN_FLAG = Flags(UINT, [
     "DXGI_SWAP_CHAIN_FLAG_NONPREROTATED",
     "DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH",
     "DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE",
+    "DXGI_SWAP_CHAIN_FLAG_RESTRICTED_CONTENT",
+    "DXGI_SWAP_CHAIN_FLAG_RESTRICT_SHARED_RESOURCE_DRIVER",
+    "DXGI_SWAP_CHAIN_FLAG_DISPLAY_ONLY",
+    "DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT",
+    "DXGI_SWAP_CHAIN_FLAG_FOREGROUND_LAYER",
+    "DXGI_SWAP_CHAIN_FLAG_FULLSCREEN_VIDEO",
+    "DXGI_SWAP_CHAIN_FLAG_YUV_VIDEO",
 ])
 
 DXGI_SWAP_CHAIN_DESC = Struct("DXGI_SWAP_CHAIN_DESC", [
@@ -348,15 +375,21 @@ IDXGIDeviceSubObject.methods += [
     StdMethod(HRESULT, "GetDevice", [(REFIID, "riid"), Out(Pointer(ObjPointer(Void)), "ppDevice")]),
 ]
 
+SHARED_HANDLE = Handle("shared_handle", RAW_HANDLE)
+
 IDXGIResource.methods += [
-    StdMethod(HRESULT, "GetSharedHandle", [Out(Pointer(HANDLE), "pSharedHandle")]),
+    StdMethod(HRESULT, "GetSharedHandle", [Out(Pointer(SHARED_HANDLE), "pSharedHandle")]),
     StdMethod(HRESULT, "GetUsage", [Out(Pointer(DXGI_USAGE), "pUsage")], sideeffects=False),
     StdMethod(HRESULT, "SetEvictionPriority", [(DXGI_RESOURCE_PRIORITY, "EvictionPriority")]),
     StdMethod(HRESULT, "GetEvictionPriority", [Out(Pointer(DXGI_RESOURCE_PRIORITY), "pEvictionPriority")], sideeffects=False),
 ]
 
+DWORD_TIMEOUT = FakeEnum(DWORD, [
+    "INFINITE",
+])
+
 IDXGIKeyedMutex.methods += [
-    StdMethod(HRESULT, "AcquireSync", [(UINT64, "Key"), (DWORD, "dwMilliseconds")]),
+    StdMethod(HRESULT, "AcquireSync", [(UINT64, "Key"), (DWORD_TIMEOUT, "dwMilliseconds")]),
     StdMethod(HRESULT, "ReleaseSync", [(UINT64, "Key")]),
 ]
 
@@ -491,31 +524,10 @@ IDXGIDevice1.methods += [
 ]
 
 
-IDXGIFactoryDWM = Interface("IDXGIFactoryDWM", IUnknown)
-IDXGISwapChainDWM = Interface("IDXGISwapChainDWM", IDXGIDeviceSubObject)
-
-IDXGIFactoryDWM.methods += [
-    StdMethod(HRESULT, "CreateSwapChain", [(ObjPointer(IUnknown), "pDevice"), (Pointer(DXGI_SWAP_CHAIN_DESC), "pDesc"), (ObjPointer(IDXGIOutput), "pOutput"), Out(Pointer(ObjPointer(IDXGISwapChainDWM)), "ppSwapChain")]),
-]
-
-# http://shchetinin.blogspot.co.uk/2012/04/dwm-graphics-directx-win8win7.html
-IDXGISwapChainDWM.methods += [
-    StdMethod(HRESULT, "Present", [(UINT, "SyncInterval"), (DXGI_PRESENT, "Flags")]),
-    StdMethod(HRESULT, "GetBuffer", [(UINT, "Buffer"), (REFIID, "riid"), Out(Pointer(ObjPointer(Void)), "ppSurface")]),
-    StdMethod(HRESULT, "GetDesc", [Out(Pointer(DXGI_SWAP_CHAIN_DESC), "pDesc")], sideeffects=False),
-    StdMethod(HRESULT, "ResizeBuffers", [(UINT, "BufferCount"), (UINT, "Width"), (UINT, "Height"), (DXGI_FORMAT, "NewFormat"), (DXGI_SWAP_CHAIN_FLAG, "SwapChainFlags")]),
-    StdMethod(HRESULT, "ResizeTarget", [(Pointer(Const(DXGI_MODE_DESC)), "pNewTargetParameters")]),
-    StdMethod(HRESULT, "GetContainingOutput", [Out(Pointer(ObjPointer(IDXGIOutput)), "ppOutput")]),
-    StdMethod(HRESULT, "GetFrameStatistics", [Out(Pointer(DXGI_FRAME_STATISTICS), "pStats")], sideeffects=False),
-    StdMethod(HRESULT, "GetLastPresentCount", [Out(Pointer(UINT), "pLastPresentCount")], sideeffects=False),
-]
-
-
 dxgi = Module('dxgi')
 dxgi.addInterfaces([
     IDXGIKeyedMutex,
     IDXGIFactory1,
-    IDXGIFactoryDWM,
     IDXGIDevice1,
     IDXGIAdapter1,
     IDXGIResource,
@@ -871,4 +883,33 @@ dxgi.addInterfaces([
     IDXGIOutput3,
     IDXGIFactory3,
     IDXGIFactoryMedia,
+])
+
+
+
+#
+# Undocumented interfaces
+#
+
+IDXGIFactoryDWM = Interface("IDXGIFactoryDWM", IUnknown)
+IDXGISwapChainDWM = Interface("IDXGISwapChainDWM", IDXGIDeviceSubObject)
+
+IDXGIFactoryDWM.methods += [
+    StdMethod(HRESULT, "CreateSwapChain", [(ObjPointer(IUnknown), "pDevice"), (Pointer(DXGI_SWAP_CHAIN_DESC), "pDesc"), (ObjPointer(IDXGIOutput), "pOutput"), Out(Pointer(ObjPointer(IDXGISwapChainDWM)), "ppSwapChain")]),
+]
+
+# http://shchetinin.blogspot.co.uk/2012/04/dwm-graphics-directx-win8win7.html
+IDXGISwapChainDWM.methods += [
+    StdMethod(HRESULT, "Present", [(UINT, "SyncInterval"), (DXGI_PRESENT, "Flags")]),
+    StdMethod(HRESULT, "GetBuffer", [(UINT, "Buffer"), (REFIID, "riid"), Out(Pointer(ObjPointer(Void)), "ppSurface")]),
+    StdMethod(HRESULT, "GetDesc", [Out(Pointer(DXGI_SWAP_CHAIN_DESC), "pDesc")], sideeffects=False),
+    StdMethod(HRESULT, "ResizeBuffers", [(UINT, "BufferCount"), (UINT, "Width"), (UINT, "Height"), (DXGI_FORMAT, "NewFormat"), (DXGI_SWAP_CHAIN_FLAG, "SwapChainFlags")]),
+    StdMethod(HRESULT, "ResizeTarget", [(Pointer(Const(DXGI_MODE_DESC)), "pNewTargetParameters")]),
+    StdMethod(HRESULT, "GetContainingOutput", [Out(Pointer(ObjPointer(IDXGIOutput)), "ppOutput")]),
+    StdMethod(HRESULT, "GetFrameStatistics", [Out(Pointer(DXGI_FRAME_STATISTICS), "pStats")], sideeffects=False),
+    StdMethod(HRESULT, "GetLastPresentCount", [Out(Pointer(UINT), "pLastPresentCount")], sideeffects=False),
+]
+
+dxgi.addInterfaces([
+    IDXGIFactoryDWM,
 ])

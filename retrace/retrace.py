@@ -127,20 +127,23 @@ class ValueDeserializer(stdapi.Visitor, stdapi.ExpanderMixin):
         tmp = '_a_' + array.tag + '_' + str(self.seq)
         self.seq += 1
 
-        print '    if (%s) {' % (lvalue,)
-        print '        const trace::Array *%s = (%s).toArray();' % (tmp, rvalue)
+        print '    const trace::Array *%s = (%s).toArray();' % (tmp, rvalue)
+        print '    if (%s) {' % (tmp,)
 
+        length = '%s->values.size()' % (tmp,)
         if self.insideStruct:
             if isinstance(array.length, int):
                 # Member is an array
                 print r'    static_assert( std::is_array< std::remove_reference< decltype( %s ) >::type >::value , "lvalue must be an array" );' % lvalue
                 print r'    static_assert( std::extent< std::remove_reference< decltype( %s ) >::type >::value == %s, "array size mismatch" );' % (lvalue, array.length)
+                print r'    assert( %s );' % (tmp,)
+                print r'    assert( %s->size() == %s );' % (tmp, array.length)
+                length = str(array.length)
             else:
                 # Member is a pointer to an array, hence must be allocated
                 print r'    static_assert( std::is_pointer< std::remove_reference< decltype( %s ) >::type >::value , "lvalue must be a pointer" );' % lvalue
                 print r'    %s = _allocator.allocArray<%s>(&%s);' % (lvalue, array.type, rvalue)
 
-        length = '%s->values.size()' % (tmp,)
         index = '_j' + array.tag
         print '        for (size_t {i} = 0; {i} < {length}; ++{i}) {{'.format(i = index, length = length)
         try:
@@ -152,6 +155,11 @@ class ValueDeserializer(stdapi.Visitor, stdapi.ExpanderMixin):
     def visitPointer(self, pointer, lvalue, rvalue):
         tmp = '_a_' + pointer.tag + '_' + str(self.seq)
         self.seq += 1
+
+        if self.insideStruct:
+            # Member is a pointer to an object, hence must be allocated
+            print r'    static_assert( std::is_pointer< std::remove_reference< decltype( %s ) >::type >::value , "lvalue must be a pointer" );' % lvalue
+            print r'    %s = _allocator.allocArray<%s>(&%s);' % (lvalue, pointer.type, rvalue)
 
         print '    if (%s) {' % (lvalue,)
         print '        const trace::Array *%s = (%s).toArray();' % (tmp, rvalue)
@@ -358,14 +366,21 @@ class SwizzledValueRegistrator(stdapi.Visitor, stdapi.ExpanderMixin):
 
 class Retracer:
 
+    def makeFunctionId(self, function):
+        name = function.name
+        if function.overloaded:
+            # TODO: Use a sequence number
+            name += '__%08x' % (hash(function) & 0xffffffff)
+        return name
+
     def retraceFunction(self, function):
-        print 'static void retrace_%s(trace::Call &call) {' % function.name
+        print 'static void retrace_%s(trace::Call &call) {' % self.makeFunctionId(function)
         self.retraceFunctionBody(function)
         print '}'
         print
 
     def retraceInterfaceMethod(self, interface, method):
-        print 'static void retrace_%s__%s(trace::Call &call) {' % (interface.name, method.name)
+        print 'static void retrace_%s__%s(trace::Call &call) {' % (interface.name, self.makeFunctionId(method))
         self.retraceInterfaceMethodBody(interface, method)
         print '}'
         print
@@ -492,7 +507,11 @@ class Retracer:
         else:
             print '    %s(%s);' % (function.name, arg_names)
 
-    def invokeInterfaceMethod(self, interface, method):
+    def doInvokeInterfaceMethod(self, interface, method):
+        # Same as invokeInterfaceMethod, but without error checking
+        #
+        # XXX: Find a better name
+
         arg_names = ", ".join(method.argNames())
         if method.type is not stdapi.Void:
             print '    _result = _this->%s(%s);' % (method.name, arg_names)
@@ -513,9 +532,6 @@ class Retracer:
             print r'        }'
             print r'    }'
 
-        if method.type is not stdapi.Void:
-            self.checkResult(interface, method)
-
         # Debug COM reference counting.  Disabled by default as reported
         # reference counts depend on internal implementation details.
         if method.name in ('AddRef', 'Release'):
@@ -531,6 +547,12 @@ class Retracer:
             print r'        }'
             print r'        retrace::delObj(call.arg(0));'
             print r'    }'
+
+    def invokeInterfaceMethod(self, interface, method):
+        self.doInvokeInterfaceMethod(interface, method)
+
+        if method.type is not stdapi.Void:
+            self.checkResult(interface, method)
 
     def checkResult(self, interface, methodOrFunction):
         assert methodOrFunction.type is not stdapi.Void
@@ -557,7 +579,9 @@ class Retracer:
                 for memberIndex in range(len(struct.members)):
                     memberType, memberName = struct.members[memberIndex]
                     if memberName.endswith('Pitch'):
-                        print r'                retrace::checkMismatch(call, "%s", _struct->members[%u], %s->%s);' % (memberName, memberIndex, outArg.name, memberName)
+                        print r'                if (%s->%s) {' % (outArg.name, memberName)
+                        print r'                    retrace::checkMismatch(call, "%s", _struct->members[%u], %s->%s);' % (memberName, memberIndex, outArg.name, memberName)
+                        print r'                }'
                 print r'            }'
                 print r'        }'
 
@@ -600,16 +624,18 @@ class Retracer:
         print 'const retrace::Entry %s[] = {' % self.table_name
         for function in functions:
             if not function.internal:
+                sigName = function.sigName()
                 if function.sideeffects:
-                    print '    {"%s", &retrace_%s},' % (function.name, function.name)
+                    print '    {"%s", &retrace_%s},' % (sigName, self.makeFunctionId(function))
                 else:
-                    print '    {"%s", &retrace::ignore},' % (function.name,)
+                    print '    {"%s", &retrace::ignore},' % (sigName,)
         for interface in interfaces:
             for base, method in interface.iterBaseMethods():
+                sigName = method.sigName()
                 if method.sideeffects:
-                    print '    {"%s::%s", &retrace_%s__%s},' % (interface.name, method.name, base.name, method.name)
+                    print '    {"%s::%s", &retrace_%s__%s},' % (interface.name, sigName, base.name, self.makeFunctionId(method))
                 else:
-                    print '    {"%s::%s", &retrace::ignore},' % (interface.name, method.name)
+                    print '    {"%s::%s", &retrace::ignore},' % (interface.name, sigName)
         print '    {NULL, NULL}'
         print '};'
         print

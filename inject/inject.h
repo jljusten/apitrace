@@ -133,6 +133,7 @@ getModuleName(char *szModuleName, size_t n, const char *szFilename) {
 struct SharedMem
 {
     BOOL bReplaced;
+    char cVerbosity;
     char szDllName[4096 - sizeof(BOOL)];
 };
 
@@ -142,29 +143,21 @@ static HANDLE hFileMapping = NULL;
 
 
 static SharedMem *
-OpenSharedMemory(void) {
+OpenSharedMemory(SECURITY_DESCRIPTOR *lpSecurityDescriptor)
+{
     if (pSharedMem) {
         return pSharedMem;
     }
 
-    // Create a NULL DACL to enable the shared memory being accessed by any
-    // process we attach to.
     SECURITY_ATTRIBUTES sa;
-    SECURITY_DESCRIPTOR sd;
-    LPSECURITY_ATTRIBUTES lpSA;
-    if (InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION) &&
-        SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE))
-    {
-        ZeroMemory(&sa, sizeof sa);
-        sa.nLength = sizeof sa;
-        sa.bInheritHandle = TRUE;
-        sa.lpSecurityDescriptor = &sd;
-        lpSA = &sa;
-    }
+    ZeroMemory(&sa, sizeof sa);
+    sa.nLength = sizeof sa;
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = lpSecurityDescriptor;
 
     hFileMapping = CreateFileMapping(
         INVALID_HANDLE_VALUE,   // system paging file
-        lpSA,                   // lpAttributes
+        &sa,                    // lpAttributes
         PAGE_READWRITE,         // read/write access
         0,                      // dwMaximumSizeHigh
         sizeof(SharedMem),      // dwMaximumSizeLow
@@ -210,37 +203,31 @@ CloseSharedMem(void) {
 }
 
 
-static inline VOID
-SetSharedMem(LPCSTR lpszSrc) {
-    SharedMem *pSharedMem = OpenSharedMemory();
-    if (!pSharedMem) {
-        return;
+/*
+ * XXX: Mixed architecture don't quite work.  See also
+ * http://www.corsix.org/content/dll-injection-and-wow64
+ */
+static BOOL
+isDifferentArch(HANDLE hProcess)
+{
+    typedef BOOL (WINAPI *PFNISWOW64PROCESS)(HANDLE, PBOOL);
+    PFNISWOW64PROCESS pfnIsWow64Process;
+    pfnIsWow64Process = (PFNISWOW64PROCESS)
+        GetProcAddress(GetModuleHandleA("kernel32"), "IsWow64Process");
+    if (!pfnIsWow64Process) {
+        return FALSE;
     }
 
-    LPSTR lpszDst = pSharedMem->szDllName;
-
-    size_t n = 1;
-    while (*lpszSrc && n < sizeof pSharedMem->szDllName) {
-        *lpszDst++ = *lpszSrc++;
-        n++;
-    }
-    *lpszDst = '\0';
-}
-
-
-static inline VOID
-GetSharedMem(LPSTR lpszDst, size_t n) {
-    SharedMem *pSharedMem = OpenSharedMemory();
-    if (!pSharedMem) {
-        return;
+    // NOTE: IsWow64Process will return false on 32-bits Windows
+    BOOL isThisWow64;
+    BOOL isOtherWow64;
+    if (!pfnIsWow64Process(GetCurrentProcess(), &isThisWow64) ||
+        !pfnIsWow64Process(hProcess, &isOtherWow64)) {
+        logLastError("IsWow64Process failed");
+        return FALSE;
     }
 
-    LPCSTR lpszSrc = pSharedMem->szDllName;
-
-    while (*lpszSrc && --n) {
-        *lpszDst++ = *lpszSrc++;
-    }
-    *lpszDst = '\0';
+    return bool(isThisWow64) != bool(isOtherWow64);
 }
 
 
@@ -285,7 +272,8 @@ injectDll(HANDLE hProcess, const char *szDllPath)
 
     GetExitCodeThread(hThread, &hModule);
     if (!hModule) {
-        debugPrintf("inject: error: failed to load %s into the remote process\n", szDllPath);
+        debugPrintf("inject: error: failed to load %s into the remote process %lu\n",
+                    szDllPath, GetProcessId(hProcess));
     } else {
         bRet = TRUE;
     }

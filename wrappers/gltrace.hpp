@@ -26,91 +26,39 @@
 #pragma once
 
 
-#include <string.h>
-#include <stdlib.h>
-#include <map>
-
 #include "glimports.hpp"
 
-#include "glprofile.hpp"
+#include "glfeatures.hpp"
+
+
+void APIENTRY _fake_glScissor(GLint x, GLint y, GLsizei width, GLsizei height);
+void APIENTRY _fake_glViewport(GLint x, GLint y, GLsizei width, GLsizei height);
 
 
 namespace gltrace {
 
 
-/**
- * OpenGL ES buffers cannot be read. This class is used to track index buffer
- * contents.
- */
-class Buffer {
-public:
-    GLsizeiptr size;
-    GLvoid *data;
-
-    Buffer() :
-        size(0),
-        data(0)
-    {}
-
-    ~Buffer() {
-        free(data);
-    }
-
-    void
-    bufferData(GLsizeiptr new_size, const void *new_data) {
-        if (new_size < 0) {
-            new_size = 0;
-        }
-        size = new_size;
-        data = realloc(data, new_size);
-        if (new_size && new_data) {
-            memcpy(data, new_data, size);
-        }
-    }
-
-    void
-    bufferSubData(GLsizeiptr offset, GLsizeiptr length, const void *new_data) {
-        if (offset >= 0 && offset < size && length > 0 && offset + length <= size && new_data) {
-            memcpy((GLubyte *)data + offset, new_data, length);
-        }
-    }
-
-    void
-    getSubData(GLsizeiptr offset, GLsizeiptr length, void *out_data) {
-        if (offset >= 0 && offset < size && length > 0 && offset + length <= size && out_data) {
-            memcpy(out_data, (GLubyte *)data + offset, length);
-        }
-    }
-};
-
 class Context {
 public:
-    glprofile::Profile profile;
-    bool user_arrays;
-    bool user_arrays_nv;
-    bool userArraysOnBegin;
-    unsigned retain_count;
+    glfeatures::Profile profile;
+    glfeatures::Extensions extensions;
+    glfeatures::Features features;
+
+    bool user_arrays = false;
+    bool userArraysOnBegin = false;
+    unsigned retain_count = 0;
 
     // Whether it has been bound before
-    bool bound;
+    bool bound = false;
+    // Whether it has been bound to a drawable
+    bool boundDrawable = false;
 
-    // TODO: This will fail for buffers shared by multiple contexts.
-    std::map <GLuint, Buffer> buffers;
+    // whether glLockArraysEXT() has ever been called
+    GLuint lockedArrayCount = 0;
 
     Context(void) :
-        profile(glprofile::API_GL, 1, 0),
-        user_arrays(false),
-        user_arrays_nv(false),
-        userArraysOnBegin(false),
-        retain_count(0),
-        bound(false)
+        profile(glfeatures::API_GL, 1, 0)
     { }
-
-    inline bool
-    needsShadowBuffers(void)
-    {
-        return profile.es();
-    }
 };
 
 void
@@ -142,5 +90,3 @@ _glGetStringi_override(GLenum name, GLuint index);
 
 
 } /* namespace gltrace */
-
-

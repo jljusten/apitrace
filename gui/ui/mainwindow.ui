@@ -92,6 +92,7 @@
     <addaction name="actionLookupState"/>
     <addaction name="actionShowThumbnails"/>
     <addaction name="actionTrim"/>
+    <addaction name="actionLeakTrace"/>
     <addaction name="separator"/>
     <addaction name="actionOptions"/>
    </widget>
@@ -133,17 +134,15 @@
    <widget class="QWidget" name="dockWidgetContents">
     <layout class="QHBoxLayout" name="horizontalLayout_2">
      <item>
-      <widget class="QWebView" name="detailsWebView">
+      <widget class="QTextBrowser" name="detailsWebView">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Preferred" vsizetype="Ignored">
          <horstretch>0</horstretch>
          <verstretch>0</verstretch>
         </sizepolicy>
        </property>
-       <property name="url">
-        <url>
-         <string>about:blank</string>
-        </url>
+       <property name="openExternalLinks">
+        <bool>true</bool>
        </property>
       </widget>
      </item>
@@ -216,8 +215,22 @@
         <attribute name="title">
          <string>Surfaces</string>
         </attribute>
-        <layout class="QVBoxLayout" name="verticalLayout_5">
-         <item>
+        <layout class="QGridLayout" name="gridLayout">
+         <item row="1" column="0">
+          <widget class="QCheckBox" name="surfacesOpaqueCB">
+           <property name="text">
+            <string>Opaque</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QCheckBox" name="surfacesAlphaCB">
+           <property name="text">
+            <string>Alpha</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="0" colspan="2">
           <widget class="QTreeWidget" name="surfacesTreeWidget">
            <column>
             <property name="text">
@@ -281,6 +294,39 @@
            </property>
            <property name="sortingEnabled">
             <bool>false</bool>
+           </property>
+           <property name="allColumnsShowFocus">
+            <bool>true</bool>
+           </property>
+           <column>
+            <property name="text">
+             <string>Name</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>Value</string>
+            </property>
+           </column>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="ssbTab">
+        <attribute name="title">
+         <string>SSBBs</string>
+        </attribute>
+        <attribute name="toolTip">
+         <string>Shader Storage Buffer Blocks</string>
+        </attribute>
+        <layout class="QVBoxLayout" name="verticalLayout_8">
+         <item>
+          <widget class="QTreeWidget" name="ssbsTreeWidget">
+           <property name="editTriggers">
+            <set>QAbstractItemView::NoEditTriggers</set>
+           </property>
+           <property name="alternatingRowColors">
+            <bool>true</bool>
            </property>
            <property name="allColumnsShowFocus">
             <bool>true</bool>
@@ -634,7 +680,7 @@
   </action>
   <action name="actionTrim">
    <property name="text">
-    <string>Tr&amp;im</string>
+    <string>Tr&amp;im (experimental)</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+I</string>
@@ -776,18 +822,19 @@
     <string>Retrace on Android</string>
    </property>
   </action>
+  <action name="actionLeakTrace">
+   <property name="text">
+    <string>&amp;LeakTrace</string>
+   </property>
+   <property name="toolTip">
+    <string>trace opengl object leaks</string>
+   </property>
+  </action>
   <zorder>stateDock</zorder>
   <zorder>vertexDataDock</zorder>
   <zorder>errorsDock</zorder>
   <zorder>backtraceDock</zorder>
  </widget>
- <customwidgets>
-  <customwidget>
-   <class>QWebView</class>
-   <extends>QWidget</extends>
-   <header>QtWebKitWidgets/QWebView</header>
-  </customwidget>
- </customwidgets>
  <resources>
   <include location="../qapitrace.qrc"/>
  </resources>

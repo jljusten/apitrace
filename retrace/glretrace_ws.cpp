@@ -30,8 +30,8 @@
 
 
 #include <string.h>
-#include <algorithm>
 
+#include <algorithm>
 #include <map>
 
 #include "os_thread.hpp"
@@ -44,13 +44,13 @@
 namespace glretrace {
 
 
-static std::map<glprofile::Profile, glws::Visual *>
+static std::map<glfeatures::Profile, glws::Visual *>
 visuals;
 
 
 inline glws::Visual *
-getVisual(glprofile::Profile profile) {
-    std::map<glprofile::Profile, glws::Visual *>::iterator it = visuals.find(profile);
+getVisual(glfeatures::Profile profile) {
+    std::map<glfeatures::Profile, glws::Visual *>::iterator it = visuals.find(profile);
     if (it == visuals.end()) {
         glws::Visual *visual = NULL;
         unsigned samples = retrace::samples;
@@ -76,20 +76,24 @@ getVisual(glprofile::Profile profile) {
 
 
 static glws::Drawable *
-createDrawableHelper(glprofile::Profile profile, int width = 32, int height = 32, bool pbuffer = false) {
+createDrawableHelper(glfeatures::Profile profile, int width = 32, int height = 32,
+                     const glws::pbuffer_info *pbInfo = NULL) {
     glws::Visual *visual = getVisual(profile);
-    glws::Drawable *draw = glws::createDrawable(visual, width, height, pbuffer);
+    glws::Drawable *draw = glws::createDrawable(visual, width, height, pbInfo);
     if (!draw) {
         std::cerr << "error: failed to create OpenGL drawable\n";
         exit(1);
     }
+
+    if (pbInfo)
+        draw->pbInfo = *pbInfo;
 
     return draw;
 }
 
 
 glws::Drawable *
-createDrawable(glprofile::Profile profile) {
+createDrawable(glfeatures::Profile profile) {
     return createDrawableHelper(profile);
 }
 
@@ -101,18 +105,18 @@ createDrawable(void) {
 
 
 glws::Drawable *
-createPbuffer(int width, int height) {
+createPbuffer(int width, int height, const glws::pbuffer_info *pbInfo) {
     // Zero area pbuffers are often accepted, but given we create window
     // drawables instead, they should have non-zero area.
     width  = std::max(width,  1);
     height = std::max(height, 1);
 
-    return createDrawableHelper(defaultProfile, width, height, true);
+    return createDrawableHelper(defaultProfile, width, height, pbInfo);
 }
 
 
 Context *
-createContext(Context *shareContext, glprofile::Profile profile) {
+createContext(Context *shareContext, glfeatures::Profile profile) {
     glws::Visual *visual = getVisual(profile);
     glws::Context *shareWsContext = shareContext ? shareContext->wsContext : NULL;
     glws::Context *ctx = glws::createContext(visual, shareWsContext, retrace::debug);
@@ -140,7 +144,7 @@ Context::~Context()
 }
 
 
-static OS_THREAD_SPECIFIC_PTR(Context)
+OS_THREAD_LOCAL Context *
 currentContextPtr;
 
 
@@ -156,12 +160,15 @@ makeCurrent(trace::Call &call, glws::Drawable *drawable, Context *context)
 
     if (currentContext) {
         glFlush();
+        currentContext->needsFlush = false;
         if (!retrace::doubleBuffer) {
             frame_complete(call);
         }
     }
 
     flushQueries();
+
+    beforeContextSwitch();
 
     bool success = glws::makeCurrent(drawable, context ? context->wsContext : NULL);
 
@@ -170,7 +177,15 @@ makeCurrent(trace::Call &call, glws::Drawable *drawable, Context *context)
         exit(1);
     }
 
-    currentContextPtr = context;
+    if (context != currentContext) {
+        if (context) {
+            context->aquire();
+        }
+        currentContextPtr = context;
+        if (currentContext) {
+            currentContext->release();
+        }
+    }
 
     if (drawable && context) {
         context->drawable = drawable;
@@ -181,13 +196,9 @@ makeCurrent(trace::Call &call, glws::Drawable *drawable, Context *context)
         }
     }
 
+    afterContextSwitch();
+
     return true;
-}
-
-
-Context *
-getCurrentContext(void) {
-    return currentContextPtr;
 }
 
 
@@ -205,7 +216,9 @@ updateDrawable(int width, int height) {
     }
 
     glws::Drawable *currentDrawable = currentContext->drawable;
-    assert(currentDrawable);
+    if (!currentDrawable) {
+        return;
+    }
 
     if (currentDrawable->pbuffer) {
         return;
@@ -226,10 +239,12 @@ updateDrawable(int width, int height) {
     height = std::max(height, currentDrawable->height);
 
     // Check for bound framebuffer last, as this may have a performance impact.
-    GLint draw_framebuffer = 0;
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_framebuffer);
-    if (draw_framebuffer != 0) {
-        return;
+    if (currentContext->features().framebuffer_object) {
+        GLint framebuffer = 0;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
+        if (framebuffer != 0) {
+            return;
+        }
     }
 
     currentDrawable->resize(width, height);
@@ -277,7 +292,7 @@ parseAttrib(const trace::Value *attribs, int param, int default_, int terminator
 /**
  * Parse GLX/WGL_ARB_create_context attribute list.
  */
-glprofile::Profile
+glfeatures::Profile
 parseContextAttribList(const trace::Value *attribs)
 {
     // {GLX,WGL}_CONTEXT_MAJOR_VERSION_ARB
@@ -304,11 +319,11 @@ parseContextAttribList(const trace::Value *attribs)
     // {GLX,WGL}_CONTEXT_ES_PROFILE_BIT_EXT
     bool es_profile = profile_mask & 0x0004;
 
-    glprofile::Profile profile;
+    glfeatures::Profile profile;
     if (es_profile) {
-        profile.api = glprofile::API_GLES;
+        profile.api = glfeatures::API_GLES;
     } else {
-        profile.api = glprofile::API_GL;
+        profile.api = glfeatures::API_GL;
         profile.core = core_profile;
         profile.forwardCompatible = forward_compatible;
     }
@@ -319,5 +334,23 @@ parseContextAttribList(const trace::Value *attribs)
     return profile;
 }
 
+
+// WGL_ARB_render_texture / wglBindTexImageARB()
+bool
+bindTexImage(glws::Drawable *pBuffer, int iBuffer) {
+    return glws::bindTexImage(pBuffer, iBuffer);
+}
+
+// WGL_ARB_render_texture / wglReleaseTexImageARB()
+bool
+releaseTexImage(glws::Drawable *pBuffer, int iBuffer) {
+    return glws::releaseTexImage(pBuffer, iBuffer);
+}
+
+// WGL_ARB_render_texture / wglSetPbufferAttribARB()
+bool
+setPbufferAttrib(glws::Drawable *pBuffer, const int *attribs) {
+    return glws::setPbufferAttrib(pBuffer, attribs);
+}
 
 } /* namespace glretrace */

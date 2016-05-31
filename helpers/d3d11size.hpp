@@ -60,7 +60,17 @@ _getNumMipLevels(const D3D11_TEXTURE2D_DESC *pDesc) {
 }
 
 inline UINT
+_getNumMipLevels(const D3D11_TEXTURE2D_DESC1 *pDesc) {
+    return pDesc->MipLevels != 0 ? pDesc->MipLevels : _getNumMipLevels(pDesc->Width, pDesc->Height);
+}
+
+inline UINT
 _getNumMipLevels(const D3D11_TEXTURE3D_DESC *pDesc) {
+    return pDesc->MipLevels != 0 ? pDesc->MipLevels : _getNumMipLevels(pDesc->Width, pDesc->Height, pDesc->Depth);
+}
+
+inline UINT
+_getNumMipLevels(const D3D11_TEXTURE3D_DESC1 *pDesc) {
     return pDesc->MipLevels != 0 ? pDesc->MipLevels : _getNumMipLevels(pDesc->Width, pDesc->Height, pDesc->Depth);
 }
 
@@ -80,7 +90,17 @@ _getNumSubResources(const D3D11_TEXTURE2D_DESC *pDesc) {
 }
 
 inline UINT
+_getNumSubResources(const D3D11_TEXTURE2D_DESC1 *pDesc) {
+    return _getNumMipLevels(pDesc) * pDesc->ArraySize;
+}
+
+inline UINT
 _getNumSubResources(const D3D11_TEXTURE3D_DESC *pDesc) {
+    return _getNumMipLevels(pDesc);
+}
+
+inline UINT
+_getNumSubResources(const D3D11_TEXTURE3D_DESC1 *pDesc) {
     return _getNumMipLevels(pDesc);
 }
 
@@ -102,7 +122,19 @@ _calcSubresourceSize(const D3D11_TEXTURE2D_DESC *pDesc, UINT Subresource, UINT R
 }
 
 static inline size_t
+_calcSubresourceSize(const D3D11_TEXTURE2D_DESC1 *pDesc, UINT Subresource, UINT RowPitch, UINT SlicePitch = 0) {
+    UINT MipLevel = Subresource % _getNumMipLevels(pDesc);
+    return _calcMipDataSize(MipLevel, pDesc->Format, pDesc->Width, pDesc->Height, RowPitch, 1, SlicePitch);
+}
+
+static inline size_t
 _calcSubresourceSize(const D3D11_TEXTURE3D_DESC *pDesc, UINT Subresource, UINT RowPitch, UINT SlicePitch) {
+    UINT MipLevel = Subresource;
+    return _calcMipDataSize(MipLevel, pDesc->Format, pDesc->Width, pDesc->Height, RowPitch, pDesc->Depth, SlicePitch);
+}
+
+static inline size_t
+_calcSubresourceSize(const D3D11_TEXTURE3D_DESC1 *pDesc, UINT Subresource, UINT RowPitch, UINT SlicePitch) {
     UINT MipLevel = Subresource;
     return _calcMipDataSize(MipLevel, pDesc->Format, pDesc->Width, pDesc->Height, RowPitch, pDesc->Depth, SlicePitch);
 }
@@ -200,6 +232,30 @@ _getMapDesc(ID3D11DeviceContext* pContext, ID3D11Resource * pResource, UINT Subr
 
     MapDesc.pData = pMappedResource->pData;
     MapDesc.Size = _calcSubresourceSize(pResource, Subresource, NULL, pMappedResource->RowPitch, pMappedResource->DepthPitch);
+}
+
+
+static inline void
+_normalizeMap(ID3D11Resource * pResource, D3D11_MAPPED_SUBRESOURCE * pMappedResource)
+{
+    D3D11_RESOURCE_DIMENSION Type = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+    pResource->GetType(&Type);
+
+    switch (Type) {
+    default:
+    case D3D11_RESOURCE_DIMENSION_UNKNOWN:
+        assert(0);
+        /* fall-through */
+    case D3D11_RESOURCE_DIMENSION_BUFFER:
+    case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+        pMappedResource->RowPitch = 0;
+        /* fall-through */
+    case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+        pMappedResource->DepthPitch = 0;
+        break;
+    case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+        break;
+    }
 }
 
 

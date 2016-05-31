@@ -101,9 +101,9 @@ const struct ExtensionsDesc *
 getExtraExtensions(const Context *ctx)
 {
     switch (ctx->profile.api) {
-    case glprofile::API_GL:
+    case glfeatures::API_GL:
         return &extraExtensionsFull;
-    case glprofile::API_GLES:
+    case glfeatures::API_GLES:
         return &extraExtensionsES;
     default:
         assert(0);
@@ -205,10 +205,12 @@ getInteger(const configuration *config,
     switch (pname) {
     case GL_NUM_PROGRAM_BINARY_FORMATS:
         if (params) {
-            if (params[0] > 0) {
+            GLint numProgramBinaryFormats = 0;
+            _glGetIntegerv(pname, &numProgramBinaryFormats);
+            if (numProgramBinaryFormats > 0) {
                 os::log("apitrace: warning: hiding program binary formats (https://github.com/apitrace/apitrace/issues/316)\n");
-                params[0] = 0;
             }
+            params[0] = 0;
         }
         return;
     case GL_PROGRAM_BINARY_FORMATS:
@@ -264,6 +266,11 @@ _glGetIntegerv_override(GLenum pname, GLint *params)
              */
             if (params[0] == 0) {
                 params[0] = 256;
+            }
+            break;
+        case GL_MAX_DEBUG_MESSAGE_LENGTH:
+            if (params[0] == 0) {
+                params[0] = 4096;
             }
             break;
         }

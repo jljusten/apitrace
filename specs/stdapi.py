@@ -26,6 +26,8 @@
 """C basic types"""
 
 
+import sys
+
 import debug
 
 
@@ -266,6 +268,10 @@ class Bitmask(Type):
 Flags = Bitmask
 
 
+def EnumFlags(name, values):
+    return Flags(Alias(name, UInt), values)
+
+
 class Array(Type):
 
     def __init__(self, type_, length):
@@ -372,7 +378,7 @@ def InOut(type, name):
 
 class Function:
 
-    def __init__(self, type, name, args, call = '', fail = None, sideeffects=True, internal=False):
+    def __init__(self, type, name, args, call = '', fail = None, sideeffects=True, internal=False, overloaded=False):
         self.type = type
         self.name = name
 
@@ -394,6 +400,7 @@ class Function:
         self.fail = fail
         self.sideeffects = sideeffects
         self.internal = internal
+        self.overloaded = overloaded
 
     def prototype(self, name=None):
         if name is not None:
@@ -413,6 +420,17 @@ class Function:
             s += "void"
         s += ")"
         return s
+
+    def sigName(self):
+        name = self.name
+        if self.overloaded:
+            # suffix used to make overloaded functions/methods unique
+            suffix = ','.join([str(arg.type) for arg in self.args])
+            suffix = suffix.replace(' *', '*')
+            suffix = suffix.replace(' &', '&')
+            suffix = '(' + suffix + ')'
+            name += suffix
+        return name
 
     def argNames(self):
         return [arg.name for arg in self.args]
@@ -489,9 +507,9 @@ class Interface(Type):
 
 class Method(Function):
 
-    def __init__(self, type, name, args, call = '', const=False, sideeffects=True):
+    def __init__(self, type, name, args, call = '', const=False, sideeffects=True, overloaded=False):
         assert call == '__stdcall'
-        Function.__init__(self, type, name, args, call = call, sideeffects=sideeffects)
+        Function.__init__(self, type, name, args, call = call, sideeffects=sideeffects, overloaded=overloaded)
         for index in range(len(self.args)):
             self.args[index].index = index + 1
         self.const = const
@@ -792,7 +810,7 @@ class MutableRebuilder(Rebuilder):
 
     def visitReference(self, reference):
         # Strip out references
-        return reference.type
+        return self.visit(reference.type)
 
 
 class Traverser(Visitor):
