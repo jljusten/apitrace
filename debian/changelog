@@ -1,3 +1,26 @@
+apitrace (7.1+git20160531.2d78bef0+repack-1) UNRELEASED; urgency=medium
+
+  * New upstream release (Closes: #823834)
+  * Acknowledge NMU. Thanks, Tobias Fost!
+  * debian/patches: refresh patches for new upstream version.
+  * debian/copyright:
+    + Remove thirdparty/snappy stanza; now stripped from tarball
+    + Add new thirdparty/brotli stanza
+    + Add new thirdparty/crc32c stanza
+  * debian/rules:
+    + Add Built-Using substitution for libsnappy-dev; we now use the packaged
+      -fPIC static archive.
+
+ -- Christopher James Halse Rogers <raof@ubuntu.com>  Fri, 03 Jun 2016 16:00:06 +1000
+
+apitrace (6.1+git20150626.62ad71c6+repack-1.1) unstable; urgency=medium
+
+  * Non-maintainer upload.
+  * libpng1.6 Transition: Change B-D on libpng12-dev to libpng-dev only
+    (Closes: #819428)
+
+ -- Tobias Frost <tobi@debian.org>  Mon, 28 Mar 2016 14:41:54 +0200
+
 apitrace (6.1+git20150626.62ad71c6+repack-1) unstable; urgency=low
 
   * Initial release (Closes: #636679)
