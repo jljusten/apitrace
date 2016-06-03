@@ -15,7 +15,7 @@ Build-Depends:
  python,
  zlib1g-dev,
  libsnappy-dev,
- libpng12-dev,
+ libpng-dev,
  libbsd-dev,
  libprocps-dev,
  libgtest-dev,
