@@ -28,7 +28,11 @@ override_dh_gencontrol:
 	echo "built-using:Depends=zlib1g-dev (= $(shell dpkg-query -s zlib1g-dev \
                                                | grep Version: \
                                                | cut -d' ' -f2))" \
-                >> debian/apitrace-gl-tracers.substvars
+                >> debian/apitrace-tracers.substvars
+	echo "built-using:Depends=libsnappy-dev (= $(shell dpkg-query -s libsnappy-dev \
+                                               | grep Version: \
+                                               | cut -d' ' -f2))" \
+                >> debian/apitrace-tracers.substvars
 	dh_gencontrol
 
 %:
