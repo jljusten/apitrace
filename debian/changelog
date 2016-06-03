@@ -1,5 +1,6 @@
-apitrace (7.1+git20160531.2d78bef0+repack-1) UNRELEASED; urgency=medium
+apitrace (7.1+git20160531.2d78bef0+repack-1) unstable; urgency=medium
 
+  [ Christopher James Halse Rogers ]
   * New upstream release (Closes: #823834)
   * Acknowledge NMU. Thanks, Tobias Fost!
   * debian/patches: refresh patches for new upstream version.
@@ -11,7 +12,7 @@ apitrace (7.1+git20160531.2d78bef0+repack-1) UNRELEASED; urgency=medium
     + Add Built-Using substitution for libsnappy-dev; we now use the packaged
       -fPIC static archive.
 
- -- Christopher James Halse Rogers <raof@ubuntu.com>  Fri, 03 Jun 2016 16:00:06 +1000
+ -- Timo Aaltonen <tjaalton@debian.org>  Fri, 03 Jun 2016 09:58:02 +0300
 
 apitrace (6.1+git20150626.62ad71c6+repack-1.1) unstable; urgency=medium
 
