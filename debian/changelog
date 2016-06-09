@@ -1,3 +1,13 @@
+apitrace (7.1+git20160531.2d78bef0+repack-1.1) unstable; urgency=medium
+
+  * Non-maintainer upload.
+  * d/rules: fix Built-Using using source package instead binary name.
+    (Closes: #826355)
+  * d/{control,rules}: enable waffle support.
+    (Closes: #826623)
+
+ -- Héctor Orón Martínez <zumbi@debian.org>  Thu, 09 Jun 2016 18:29:55 +0200
+
 apitrace (7.1+git20160531.2d78bef0+repack-1) unstable; urgency=medium
 
   [ Christopher James Halse Rogers ]
