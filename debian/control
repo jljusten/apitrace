@@ -9,6 +9,7 @@ Build-Depends:
  libegl1-mesa-dev,
  libgles1-mesa-dev,
  libgles2-mesa-dev,
+ libwaffle-dev,
  qtbase5-dev,
  libqt5webkit5-dev,
  pkg-config,
