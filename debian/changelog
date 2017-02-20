@@ -1,4 +1,4 @@
-apitrace (7.1+git20170219.6a30de19+repack-1.1) UNRELEASED; urgency=low
+apitrace (7.1+git20170219.6a30de19+repack-1.1) experimental; urgency=low
 
   * Non-maintainer upload
   * Remove dependency on libgles1-mesa-dev
