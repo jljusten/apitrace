@@ -9,6 +9,10 @@ if (CMAKE_GENERATOR STREQUAL "Xcode")
     message (FATAL_ERROR "Xcode generator is not supported. Please build with \"Unix Makefiles\" or \"Ninja\" generators.")
 endif ()
 
+if (APPLE)
+    set (CMAKE_OSX_ARCHITECTURES "" CACHE STRING "Build architectures for OSX" FORCE)
+endif ()
+
 # http://www.cmake.org/cmake/help/v3.0/policy/CMP0042.html
 if (POLICY CMP0042)
     cmake_policy (SET CMP0042 NEW)
@@ -20,11 +24,6 @@ project (apitrace)
 
 ##############################################################################
 # Options
-
-# On Mac OS X build fat binaries with i386 and x86_64 architectures by default.
-if (APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
-    set (CMAKE_OSX_ARCHITECTURES "i386;x86_64" CACHE STRING "Build architectures for OSX" FORCE)
-endif ()
 
 # We use a cached string variable instead of the standard (boolean) OPTION
 # command so that we can default to auto-detecting optional depencies, while
@@ -75,11 +74,12 @@ endif ()
 ##############################################################################
 # Find dependencies
 
+include (CheckCXXSourceCompiles)
+
 # Check for compiler TLS support.  We don't use compiler TLS support on Windows
 # because, even if the compiler supports it, Windows XP does not support TLS on
 # DLLs.
 if (NOT WIN32)
-    include (CheckCXXSourceCompiles)
     check_cxx_source_compiles ("__thread int i; int main() { return 0; }" HAVE_COMPILER_TLS)
     if (NOT HAVE_COMPILER_TLS)
         message (FATAL_ERROR "C++ compiler does not support __thread keyword.")
@@ -124,11 +124,9 @@ if (ENABLE_GUI)
 endif ()
 
 if (MSVC)
-    if (${MSVC_VERSION} LESS 1800)
-        message (FATAL_ERROR "Visual Studio 2013 or later required")
+    if (${MSVC_VERSION} LESS 1900)
+        message (FATAL_ERROR "Visual Studio 2015 or later required")
     endif ()
-
-    include (Windows10SDK)
 endif ()
 
 if (WIN32)
@@ -149,12 +147,8 @@ if (WIN32)
 
     if (WINDOWS_XP)
         set (DirectX_D3D11_3_INCLUDE_FOUND FALSE)
-    elseif (DEFINED MSVC_VERSION AND NOT DirectX_D3D11_3_INCLUDE_FOUND)
-        if (${MSVC_VERSION} LESS 1900)
-            message (FATAL_ERROR "Windows 10 SDK (https://dev.windows.com/en-us/downloads/windows-10-sdk) must be installed for D3D11.3 support")
-        else ()
-            message (FATAL_ERROR "Windows 10 SDK must be selected (-DCMAKE_SYSTEM_VERSION=10.0) for D3D11.3 support")
-        endif ()
+    elseif (MSVC AND NOT DirectX_D3D11_3_INCLUDE_FOUND)
+        message (FATAL_ERROR "Windows 10 SDK must be selected (-DCMAKE_SYSTEM_VERSION=10.0) for D3D11.3 support")
     endif ()
 
     set (ENABLE_EGL false)
@@ -319,14 +313,11 @@ else ()
     add_compiler_flags (-fmessage-length=0)
 endif ()
 
-if (CMAKE_CXX_COMPILER_ID MATCHES Clang AND CMAKE_BUILD_TYPE MATCHES Rel)
-    message (WARNING
-        "\n"
-        "  WARNING: NON-DEBUG BUILDS ON CLANG CAN TAKE UP TO 45MIN!\n"
-        "  See https://github.com/apitrace/apitrace/issues/346\n"
-        ""
-    )
-    execute_process (COMMAND ${CMAKE_COMMAND} -E sleep 5)
+if (APPLE)
+    check_cxx_source_compiles ("#include <AvailabilityMacros.h>\n#if MAC_OS_X_VERSION_MAX_ALLOWED >= 101200\nint main() { return 0; }\n#endif" HAVE_MACOSX_10_12_SDK)
+    if (NOT HAVE_MACOSX_10_12_SDK)
+        message (FATAL_ERROR "macOS 10.12 SDK or newer (i.e. Xcode 8.0 or newer) required")
+    endif ()
 endif ()
 
 if (MINGW)
@@ -345,12 +336,22 @@ if (ENABLE_FRAME_POINTER)
     endif ()
 endif ()
 
-# Enable Data Execution Prevention and Address Space Layout Randomization
 if (WIN32)
+    # Enable Data Execution Prevention and Address Space Layout Randomization
     if (MSVC)
         add_linker_flags (/NXCOMPAT /DYNAMICBASE)
     else ()
         add_linker_flags (-Wl,--nxcompat -Wl,--dynamicbase)
+    endif ()
+
+    # Use more than 2GB virtual memory address space for 32-bits processes
+    # where available (3GB on 32-bits Windows with 4GT, 4GB on 64-bits Windows)
+    if (CMAKE_SIZEOF_VOID_P EQUAL 4)
+        if (MSVC)
+            add_linker_flags (/LARGEADDRESSAWARE)
+        else ()
+            add_linker_flags (-Wl,--large-address-aware)
+        endif ()
     endif ()
 endif ()
 
@@ -467,7 +468,7 @@ include_directories (${ZLIB_INCLUDE_DIRS})
 # version), adding its include dirs and libraries, and overwriting ZLIB_FOUND.
 # So if the system's ZLIB was did not meet the our requirements, then there's
 # no safe way to use the system's PNG library.
-if (NOT WIN32 AND NOT ENABLE_STATIC_EXE AND ZLIB_FOUND)
+if (NOT WIN32 AND NOT APPLE AND NOT ENABLE_STATIC_EXE AND ZLIB_FOUND)
     find_package (PNG)
 endif ()
 if (NOT PNG_FOUND)
@@ -488,6 +489,7 @@ if (WIN32)
     add_subdirectory (thirdparty/dxerr)
     add_subdirectory (thirdparty/directxtex)
     add_subdirectory (thirdparty/devcon)
+    add_subdirectory (thirdparty/mhook)
 endif ()
 
 add_subdirectory (thirdparty/crc32c)

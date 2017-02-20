@@ -146,12 +146,21 @@ public:
 
         EGLConfig config = static_cast<const EglVisual *>(visual)->config;
         surface = eglCreateWindowSurface(eglDisplay, config, (EGLNativeWindowType)window, NULL);
+        if (surface == EGL_NO_SURFACE) {
+            // XXX: But don't defer destruction if eglCreateWindowSurface fails, which is the case of SwiftShader
+            eglDestroySurface(eglDisplay, oldSurface);
+            oldSurface = EGL_NO_SURFACE;
+            surface = eglCreateWindowSurface(eglDisplay, config, (EGLNativeWindowType)window, NULL);
+        }
+        assert(surface != EGL_NO_SURFACE);
 
         if (rebindDrawSurface || rebindReadSurface) {
             eglMakeCurrent(eglDisplay, surface, surface, currentContext);
         }
 
-        eglDestroySurface(eglDisplay, oldSurface);
+        if (oldSurface != EGL_NO_SURFACE) {
+            eglDestroySurface(eglDisplay, oldSurface);
+        }
     }
 
     void
@@ -323,12 +332,12 @@ createVisual(bool doubleBuffer, unsigned samples, Profile profile) {
 
     Attributes<EGLint> attribs;
     attribs.add(EGL_SURFACE_TYPE, EGL_WINDOW_BIT);
-    attribs.add(EGL_RED_SIZE, 1);
-    attribs.add(EGL_GREEN_SIZE, 1);
-    attribs.add(EGL_BLUE_SIZE, 1);
-    attribs.add(EGL_ALPHA_SIZE, 1);
-    attribs.add(EGL_DEPTH_SIZE, 1);
-    attribs.add(EGL_STENCIL_SIZE, 1);
+    attribs.add(EGL_RED_SIZE, 8);
+    attribs.add(EGL_GREEN_SIZE, 8);
+    attribs.add(EGL_BLUE_SIZE, 8);
+    attribs.add(EGL_ALPHA_SIZE, 8);
+    attribs.add(EGL_DEPTH_SIZE, 24);
+    attribs.add(EGL_STENCIL_SIZE, 8);
     attribs.add(EGL_RENDERABLE_TYPE, api_bits);
     attribs.end(EGL_NONE);
 
@@ -382,11 +391,23 @@ createVisual(bool doubleBuffer, unsigned samples, Profile profile) {
     EglVisual *visual = new EglVisual(profile);
     visual->config = config;
 
+    XVisualInfo* visinfo;
     XVisualInfo templ;
     int num_visuals = 0;
     templ.visualid = visual_id;
-    visual->visinfo = XGetVisualInfo(display, VisualIDMask, &templ, &num_visuals);
-    assert(visual->visinfo);
+    visinfo = XGetVisualInfo(display, VisualIDMask, &templ, &num_visuals);
+    if (!visinfo) {
+        // XXX: XGetVisualInfo fails with SwiftShader somehow
+        visinfo = new XVisualInfo;
+        int depth = DefaultDepth(display, screen);
+        if (!XMatchVisualInfo(display, screen, depth, TrueColor, visinfo)) {
+            delete visinfo;
+            assert(0);
+            return NULL;
+        }
+    }
+    assert(visinfo);
+    visual->visinfo = visinfo;
 
     return visual;
 }

@@ -96,7 +96,7 @@ Build as:
         -H. -Bbuild \
         -DCMAKE_TOOLCHAIN_FILE=$PWD/android.toolchain.cmake \
         -DANDROID_NDK=/path/to/your/ndk \
-        -DANDROID_API_LEVEL=9 \
+        -DANDROID_API_LEVEL=21 \
         -DANDROID_STL=gnustl_shared \
         [-DANDROID_SDK=/path/to/your/sdk]
 
@@ -112,7 +112,7 @@ CMake as:
     cmake \
         -H. -Bbuild \
         -DCMAKE_TOOLCHAIN_FILE=$PWD/android.toolchain.cmake \
-        -DANDROID_API_LEVEL=9 \
+        -DANDROID_API_LEVEL=21 \
         -DANDROID_TOOLCHAIN_NAME=aarch64-linux-android-4.9 \
         -DANDROID_ABI=arm64-v8a
 
@@ -136,7 +136,7 @@ Additional requirements:
 
 * CMake 3.4 or later
 
-* Microsoft Visual Studio 2013 or newer (instructions presume 2015)
+* Microsoft Visual Studio 2015 or newer (instructions presume 2015)
 
 * [Windows 10 SDK](https://dev.windows.com/en-us/downloads/windows-10-sdk)
   for D3D11.3 headers.

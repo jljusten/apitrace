@@ -2,11 +2,11 @@
 
 Run the application you want to trace as
 
-    apitrace trace --api API /path/to/application [args...]
+    apitrace trace --api [gl|egl|d3d7|d3d8|d3d9|dxgi] /path/to/application [args...]
 
 and it will generate a trace named `application.trace` in the current
 directory.  You can specify the written trace filename by passing the
-`--output` command line option.
+`--output` command line option. The default API is `gl` if none is specified.
 
 Problems while tracing (e.g, if the application uses calls/parameters
 unsupported by apitrace) will be reported via stderr output on Unices.  On
@@ -561,6 +561,6 @@ system configuration:
 
 2. The target host must have a functional glretrace binary available
 
-3. The target host must have access to <trace-file> at the same path
-   in the filesystem as the <trace-file> path on the host system being
+3. The target host must have access to `trace-file` at the same path
+   in the filesystem as the `trace-file` path on the host system being
    passed to the qapitrace command line.
