@@ -3,6 +3,7 @@ apitrace (7.1+git20170219.6a30de19+repack-1.1) UNRELEASED; urgency=low
   * Non-maintainer upload
   * Remove dependency on libgles1-mesa-dev
   * Reflow apitrace-gui description to fix lintian warning
+  * Ignore binary-without-manpage lintian warnings
 
  -- Jordan Justen <jordan.l.justen@intel.com>  Sun, 19 Feb 2017 20:45:47 -0800
 
